@@ -615,4 +615,92 @@ public class ItemController {
     }
 
 }
+``` 
+
+## Eureka Server
+
+Eureka funciona como un servidor de nombres, en donde los microservicios se registran y se almacenan, de esta forma los microservicios pueden comunicarse entre si conociendo solo el nombre del servicio.
+
+Para este ejemplo necesitamos las dependencias de **devtools** y **Eureka Server**.
+
+Ademas, por defecto Eureka se registra a si mismo como servidor y como cliente, en este caso solo necesitamos que sea servidor, por lo que debemos xonfigurar esto en el archivo `application.properties`.
+
+```properties
+spring.application.name=eureka
+server.port=8761
+
+eureka.client.register-with-eureka=false
+eureka.client.fetch-registry=false
 ```
+
+También debemos agregar la dependencia de `jaxb` en el `pom.xml`.
+
+```xml
+<dependency>
+    <groupId>org.glassfish.jaxb</groupId>
+    <artifactId>jaxb-runtime</artifactId>
+</dependency>
+```
+
+Esta dependencia es necesaria para que Eureka pueda leer los archivos XML.
+
+Para habilitar Eureka debemos agregar la anotación **@EnableEurekaServer** en la clase principal de la aplicación.
+
+```java
+@EnableEurekaServer
+@SpringBootApplication
+public class EurekaApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(EurekaApplication.class, args);
+	}
+
+}
+```
+
+Con estas configuraciones ya podemos levantar el servidor y ver la pagina de Eureka en la URL `http://localhost:8761`. En esta página se nos muestra el estado del sistema y los microservicios que están registrados.
+
+### Configurando los microservicios como Eureka Client
+
+Para que los microservicios se registren en Eureka, debemos agregar la dependencia de **Eureka Client** en el `pom.xml`.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+    </dependency>
+```
+
+También debemos indicar en el archivo `application.properties` la URL del servidor de Eureka.
+
+```properties
+eureka.client.service-url.defaultZone=http://localhost:8761/eureka
+```
+
+Cuando el servidor Eureka y los clientes están en maquinas distintas, es obligatorio indicar la dirección del servidor. Ya que cada cliente se tiene que registrar enviando una señal al servidor, esta señal se conoce como **heartbeat**, con esto indica que está habilitado y provee al servidor sus datos, una vez registrado, el servidor le pasa el registro de los demás servicios registrados. Cada 30 seg cada cliente debe estar enviando esta señal, si no lo hace durante 3 periodos, 90 seg, el servidor lo elimina del registro, si luego otra vez después de 90 seg envía la señal, el servidor lo vuelve a registrar.
+
+### Escalar microservicios con puerto dinámico
+
+Podemos configurar el microservicio de productos para que Spring elija de forma automática el puerto en el que se va a desplegar, para esto debemos configurar el puerto en el archivo `application.properties` de la siguiente forma.
+
+```properties
+server.port=${PORT:0}
+eureka.instance.instance-id=${spring.application.name}:${spring.application.instance_id:${random.value}}
+```
+
+Con esto configuramos el puerto de forma dinámica, Spring va a elegir un puerto disponible y lo va a asignar a la variable **${PORT}**, ademas configuramos el **instance-id** de forma dinámica, Spring va a asignar un id de instancia de forma automática.
+
+### Tolerancia a fallos y latencia con Hystrix
+
+**Hystrix** es una librería de **Spring Cloud** que nos permite manejar fallos en la comunicación entre microservicios, añade funcionalidades para manejar la latencia y tolerancia a fallos, por ejemplo en caso de alcanzar un cierto limite de fallos en una instancia en particular, **Hystrix** deja de realizar solicitudes a esa instancia y redirige el trafico a otra instancia.
+
+Para usar **Hystrix** debemos agregar la dependencia en el `pom.xml`.
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-netflix-hystrix</artifactId>
+</dependency>
+```
+
+Es importante resaltar que **Hystrix** solo funciona en versiones anteriores a **Spring Boot 2.0**, en versiones posteriores se recomienda usar **Resilience4j**.
