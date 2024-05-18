@@ -703,4 +703,224 @@ Para usar **Hystrix** debemos agregar la dependencia en el `pom.xml`.
 </dependency>
 ```
 
-Es importante resaltar que **Hystrix** solo funciona en versiones anteriores a **Spring Boot 2.0**, en versiones posteriores se recomienda usar **Resilience4j**.
+Es importante resaltar que **Hystrix** solo funciona en versiones anteriores a **Spring Boot 2.5**, en versiones posteriores se recomienda usar **Resilience4j**.
+
+Una vez agregada la dependencia debemos habilitar **Hystrix** en la clase principal de la aplicación usando la anotación **@EnableCircuitBreaker**.
+
+```java
+@EnableCircuitBreaker
+@SpringBootApplication
+public class MicroserviceItemApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(MicroserviceItemApplication.class, args);
+    }
+
+}
+```
+
+Con esto podemos usar anotaciones como **@HystrixCommand** en los controladores para manejar los fallos.
+
+```java
+@HystricCommand(fallbackMethod = "metodoAlternativo")
+@GetMapping("/ver/{id}/cantidad/{cantidad}")
+public Item detalle(@PathVariable Long id, @PathVariable Integer cantidad) {
+    return itemService.findById(id, cantidad);
+}
+```
+
+Entonces con esto estamos indicando a **Hystrix** que si hay un fallo en el método **findById()** se ejecute el método **metodoAlternativo()**, el cual debe tener la misma firma que el método que se está manejando.
+
+```java
+public Item metodoAlternativo(Long id, Integer cantidad) {
+    Item item = new Item();
+    Producto producto = new Producto();
+
+    item.setCantidad(cantidad);
+    producto.setId(id);
+    producto.setNombre("Producto por defecto");
+    producto.setPrecio(0.0);
+    item.setProducto(producto);
+
+    return item;
+
+
+}
+```
+
+Osea que debe retornar el mismo tipo de dato y recibir los mismos tipos de parámetros.
+
+En este ejemplo estamos creando un nuevo objeto **Item** y retornándolo, pero en un caso real lo que se suele hacer es implementar un mecanismo que funcione como salvavidas, ya sea llamando a otra instancia o a otro servicio para de esta forma redireccionar el trafico y no afectar la disponibilidad del servicio.
+
+### Timeout en Hystrix y Ribbon
+
+**Hystrix** y **Ribbon** nos permiten configurar el tiempo de espera de una petición, esto es útil para manejar la latencia y tolerancia a fallos, por ejemplo si una instancia tarda mucho en responder, **Hystrix** puede redirigir el trafico a otra instancia.
+
+Para configurar el tiempo de espera en **Hystrix** debemos agregar la siguiente configuración en el archivo `application.properties`.
+
+```properties
+hystrix.command.default.execution.isolation.thread.timeoutInMilliseconds=6000
+```
+
+Con esto estamos configurando el tiempo de espera en 2 segundos, si una instancia tarda mas de 2 segundos en responder, **Hystrix** va a redirigir el trafico a otra instancia.
+
+Para configurar el tiempo de espera en **Ribbon** debemos agregar la siguiente configuración en el archivo `application.properties`.
+
+```properties
+ribbon.ReadTimeout=3000
+ribbon.ConnectTimeout=1000
+```
+
+Con esto estamos configurando el tiempo de espera en 3 segundos, si una instancia tarda mas de 3 segundos en responder, **Ribbon** va a redirigir el trafico a otra instancia.
+
+**Hystrix** envuelve a **Ribbon** por esto el tiempo de espera de **Hytrix** es mayor al de **Ribbon**.
+
+### API Gateway con Zuul
+
+Una **API Gateway** es un servicio que funciona como puerta de entrada a los demás microservicios, se encarga de erutar las peticiones a los microservicios correspondientes, ademas de la autenticación y autorización de los usuarios.
+
+Para este ejemplo usaremos **Zuul**, el cual es usado en versiones anteriores a **Spring Boot 2.4**, en versiones posteriores se recomienda usar **Spring Cloud Gateway**.
+
+Las **API Gateway** tienen varias características, como:
+
+- **Enrutamiento dinámico**: ya que enruta cada uno de los servicios registrados con Eureka y les puede otorgar una ruta base o prefijo a cada uno de ellos, esto nos permite centralizar el acceso a todo este ecosistema en un solo punto de entrada.
+- **Balanceo de cargas**: ya que puede distribuir la carga entre las instancias de un microservicio, para que no se saturen y se pueda mantener la disponibilidad del servicio.
+- **Compuesto por un conjunto de filtros**: que nos permiten interceptar las peticiones y las respuestas, para realizar tareas como la autenticación y autorización de los usuarios, la compresión de las respuestas, el encriptado de las peticiones, etc. En vez de implementar la autenticación en cada uno de los servicios, podemos implementarla una sola vez en la **API Gateway**.
+
+Para crear nuestro servicio **Zuul** debemos agregar las dependencias de:
+
+- Eureka Client: esta es importante ya que **Zuul** se va a registrar como cliente en el servidor de Eureka.
+- Devtools
+- Spring Web
+
+Ademas debemos agregar la dependencia de **Zuul** en el `pom.xml`.
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-netflix-zuul</artifactId>
+</dependency>
+```
+
+Para habilitar **Zuul** debemos agregar la anotación **@EnableZuulProxy** en la clase principal de la aplicación.
+
+```java
+@EnableZuulProxy
+@SpringBootApplication
+public class GatewayApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(GatewayApplication.class, args);
+    }
+
+}
+```
+
+también debemos configurar el **application.properties** para que **Zuul** se registre en el servidor de Eureka.
+
+```properties
+spring.application.name=gateway
+server.port=8090
+
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+
+zuul.routes.productos.serviceId=microservice-products
+zuul.routes.productos.path=/api/productos/**
+
+zuul.routes.items.serviceId=microservice-item
+zuul.routes.items.path=/api/items/**
+```
+
+Con esto estamos configurando **Zuul** para que enrute las peticiones a los microservicios de productos e items, ademas estamos configurando las rutas de acceso a estos microservicios.
+
+### Filtros en Zuul
+
+**Zuul** está básicamente compuesto por filtros, estos filtros tienen 3 tipos de ejecución que manejan en ciclo de vida de una petición HTTP:
+
+- **pre**: se ejecuta antes de que la petición sea enrutada. Se usa para asignar datos e información al request para que posteriormente estos puedan ser usados por los otros filtros.
+- **route**: se ejecuta cuando la petición es enrutada. Aquí es en donde se resuelve la ruta hacia el microservicio y se envía la petición.
+- **post**: se ejecuta después de que la petición es enrutada. Se usa para manipular el response, típicamente los headers.
+
+En este ejemplo implementaremos un filtro que calculara el tiempo transcurrido en una comunicación con un microservicio. Para esto necesitamos 2 filtros un pre, que se encarga de calcular el tiempo inicial antes de realizar el Enrutamiento y la comunicación con el microservicio y un post que va a obtener el parámetro del tiempo inicial asignado por el filtro pre y se le restara el tiempo actual para obtener el tiempo transcurrido.
+
+Creamos un nuevo package **filters** y una clase **PreTiempoTranscurridoFilter**.
+
+```java
+@Component
+public class PreTiempoTranscurridoFilter extends ZuulFilter {
+
+    private static Logger log = LoggerFactory.getLogger(PreTiempoTranscurridoFilter.class);
+
+    @Override
+    public String filterType() {
+        return "pre";
+    }
+
+    @Override
+    public int filterOrder() {
+        return 1;
+    }
+
+    @Override
+    public boolean shouldFilter() {
+        return true;
+    }
+
+    @Override
+    public Object run() throws ZuulException {
+
+        RequestContext ctx = RequestContext.getCurrentContext();
+        HttpServletRequest request = ctx.getRequest();
+        Log.info(String.format("%s request enrutado a %s", request.getMethod(), request.getRequestURL().toString()));
+
+        Long tiempoInicio = System.currentTimeMillis();
+        request.setAttribute("tiempoInicio", tiempoInicio);
+
+        return null;
+    }
+}
+```
+
+En este filtro estamos obteniendo el tiempo inicial en el método **run()** y lo estamos asignando al request, para que luego el filtro post pueda obtener este tiempo y calcular el tiempo transcurrido.
+
+Luego creamos una clase **PostTiempoTranscurridoFilter**.
+
+```java
+@Component
+public class PostTiempoTranscurridoFilter extends ZuulFilter {
+
+    private static Logger log = LoggerFactory.getLogger(PostTiempoTranscurridoFilter.class);
+
+    @Override
+    public String filterType() {
+        return "post";
+    }
+
+    @Override
+    public int filterOrder() {
+        return 1;
+    }
+
+    @Override
+    public boolean shouldFilter() {
+        return true;
+    }
+
+    @Override
+    public Object run() throws ZuulException {
+
+        RequestContext ctx = RequestContext.getCurrentContext();
+        HttpServletRequest request = ctx.getRequest();
+
+        Long tiempoInicio = (Long) request.getAttribute("tiempoInicio");
+        Long tiempoFinal = System.currentTimeMillis();
+        Long tiempoTranscurrido = tiempoFinal - tiempoInicio;
+
+        log.info(String.format("Tiempo transcurrido en segundos %s seg.", tiempoTranscurrido.doubleValue()/1000.00));
+
+        return null;
+    }
+}
+```
+
+En este filtro estamos obteniendo el tiempo inicial que asignamos en el filtro pre y estamos calculando el tiempo transcurrido, este tiempo lo estamos imprimiendo en la consola.
