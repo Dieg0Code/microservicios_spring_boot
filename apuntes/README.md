@@ -924,3 +924,477 @@ public class PostTiempoTranscurridoFilter extends ZuulFilter {
 ```
 
 En este filtro estamos obteniendo el tiempo inicial que asignamos en el filtro pre y estamos calculando el tiempo transcurrido, este tiempo lo estamos imprimiendo en la consola.
+
+## Spring Cloud Gateway
+
+Para efectos prácticos es un servidor de enrutamiento dinámico compuesto por filtros de autorización, monitoreo, métricas, etc. Al igual que con Zuul, podemos implementar nuestros propios filtros para por ejemplo trabajar con multiples lenguajes, para modificar respuestas, manejo de errores personalizado, modificar headers, etc.
+
+#### Principales características:
+
+- Dos implementaciones principales: **Zuul** y **Spring Cloud Gateway**.
+- Puerta de enlace, acceso centralizado.
+- Enrutamiento dinámico de los microservicios.
+- Balanceo de carga.
+- Maneja filtros propios.
+- Permite extender funcionalidades.
+
+### Configuración de Spring Cloud Gateway
+
+Para crear el servidor gateway debemos agregar dos dependencias principales:
+
+- **Spring Cloud Gateway**: para habilitar el servidor.
+- **Spring Cloud Eureka Client**: para registrar el servidor en Eureka.
+
+Luego en el archivo `application.properties` debemos configurar el puerto, el nombre de la aplicación y la dirección de Eureka.
+
+```properties
+spring.application.name=gateway-server
+server.port=8090
+
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+```
+
+Luego para configurar las direcciones de los microservicios debemos crear un archivo de configuración `application.yaml` en la carpeta `resources`.
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=2
+        - id: microservice-item
+          uri: lb://microservice-item
+          predicates:
+            - Path=/api/items/**
+          filters:
+            - StripPrefix=2
+```
+
+Con esta configuración estamos indicando las rutas que manejará la gateway, los **id** deben ser el nombre del microservicio, la **uri** comienza con **lb** que quiere decir **load balancer** seguido de la dirección del servicio, luego los **predicates** o predicados que son los prefijos que se le ponen a la url por ejemplo **localhost:8090/api/item/listar** y por último los **filters**, en este caso **StripPrefix=2** para indicar que el prefijo que le ponemos al servicio tiene 2 segmentos **api** y **item/products** respectivamente.
+
+### Filtros en Spring Cloud Gateway
+
+Podemos implementar filtro globales en la gateway, cada request que pase por esta va a pasar por los filtros. Adicional podemos implementar filtros específicos por rutas
+
+Para esto creamos un nuevo package llamado **filters** y una clase **EjGlobalFilter**.
+
+```java
+package com.dieg0code.gatewayserver.filters;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.cloud.gateway.filter.GatewayFilterChain;
+import org.springframework.cloud.gateway.filter.GlobalFilter;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseCookie;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
+
+@Component
+public class EjGlobalFilter implements GlobalFilter {
+
+    private final Logger log = LoggerFactory.getLogger(EjGlobalFilter.class);
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        log.info("Ejecutando pre filtro");
+        return chain.filter(exchange).then(Mono.fromRunnable(() -> {
+            log.info("Ejecutando post filtro");
+            exchange.getResponse().getCookies().add("color", ResponseCookie.from("color", "rojo").build());
+            exchange.getResponse().getHeaders().setContentType(MediaType.TEXT_PLAIN);
+        }));
+    }
+}
+```
+
+En este filtro estamos implementando la interfaz **GlobalFilter** y sobrescribiendo el método **filter()**, en este método estamos imprimiendo un mensaje en la consola, luego estamos llamando al método **chain.filter(exchange)** para que la petición siga su curso, y por último estamos imprimiendo otro mensaje en la consola y estamos agregando una cookie a la respuesta.
+
+### Modificar la request en el filtro pre
+
+Si queremos modificar la petición antes de que esta sea enviada al microservicio podemos hacerlo de la siguiente forma.
+
+```java
+@Component
+public class EjGlobalFilter implements GlobalFilter {
+
+    private final Logger log = LoggerFactory.getLogger(EjGlobalFilter.class);
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        log.info("Ejecutando pre filtro");
+
+        exchange.getRequest().mutate().headers(h -> h.add("token", "123456"));
+
+        return chain.filter(exchange).then(Mono.fromRunnable(() -> {
+            log.info("Ejecutando post filtro");
+
+            Optional.ofNullable(exchange.getRequest().getHeaders().getFirst("token")).ifPresent(value -> {
+                exchange.getResponse().getHeaders().add("token", value);
+            });
+
+            exchange.getResponse().getCookies().add("color", ResponseCookie.from("color", "rojo").build());
+            exchange.getResponse().getHeaders().setContentType(MediaType.TEXT_PLAIN);
+        }));
+    }
+}
+```
+
+Por lo general si modificamos una request, solo modificamos los headers, ya que seria raro, aunque no imposible, modificar el cuerpo de la petición.
+
+En este ejemplo estamos agregando un header a la petición. Obtenemos las request y mutamos el header, agregándole un "token" con el valor "123456". Luego dentro del método **then()** estamos obteniendo el valor del header "token" y lo estamos agregando a la respuesta.
+
+### Order en los filtros
+
+También podemos indicar el orden en el que se van a ejecutar los filtros, para esto debemos implementar la interfaz **Ordered** y sobrescribir el método **getOrder()**.
+
+```java
+  @Override
+    public int getOrder() {
+        return 1;
+    }
+```
+
+Con esto estamos indicando que este filtro se va a ejecutar primero, si tenemos varios filtros y queremos que se ejecuten en un orden especifico, debemos indicar el orden en el que se van a ejecutar.
+
+### Gateway filter factory
+
+**Spring Cloud Gateway** nos permite crear nuestros propios filtros, para esto debemos crear un package llamado **filters** y una clase **EjemploGatewayFilterFactory**. Debe llamarse **nombre del filtro** + **GatewayFilterFactory** para que **Spring Cloud Gateway** lo reconozca.
+
+```java
+@Component
+public class EjemploGatewayFilterFactory extends AbstractGatewayFilterFactory<EjemploGatewayFilterFactory.Config> {
+
+    private final Logger log = LoggerFactory.getLogger(EjemploGatewayFilterFactory.class);
+
+    public EjemploGatewayFilterFactory() {
+        super(Config.class);
+    }
+
+    @Override
+    public GatewayFilter apply(Config config) {
+        return (exchange, chain) -> {
+            log.info("Ejecutando pre gateway filter factory: " + config.mensaje);
+            return chain.filter(exchange).then(Mono.fromRunnable(() -> {
+
+                Optional.ofNullable(config.cookieValue).ifPresent(cookie -> {
+                    exchange.getResponse().addCookie(ResponseCookie.from(config.cookieName, cookie).build());
+                });
+
+                log.info("Ejecutando post gateway filter factory");
+            }));
+        };
+    }
+
+    public class Config {
+        private String mensaje;
+        private String cookieValue;
+        private String cookieName;
+
+        public String getMensaje() {
+            return mensaje;
+        }
+
+        public void setMensaje(String mensaje) {
+            this.mensaje = mensaje;
+        }
+
+        public String getCookieValue() {
+            return cookieValue;
+        }
+
+        public void setCookieValue(String cookieValue) {
+            this.cookieValue = cookieValue;
+        }
+
+        public String getCookieName() {
+            return cookieName;
+        }
+
+        public void setCookieName(String cookieName) {
+            this.cookieName = cookieName;
+        }
+    }
+
+}
+```
+
+La clase debe comenzar extendiendo de **AbstractGatewayFilterFactory** y debe tener una clase interna llamada **Config** que va a tener los atributos que se van a configurar en el archivo **application.yaml**. Luego debemos sobrescribir el método **apply()** y dentro de este método vamos a implementar la lógica del filtro. En este caso estamos obteniendo el mensaje y la cookie que se van a configurar en el archivo **application.yaml** y estamos agregando el mensaje a la consola y la cookie a la respuesta.
+
+Luego en el archivo **application.yaml** debemos configurar el filtro.
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=2
+            - name: Ejemplo
+              args:
+                mensaje: Hola Mundo
+                cookieName: cookie
+                cookieValue: cookieValue
+        - id: microservice-item
+          uri: lb://microservice-item
+          predicates:
+            - Path=/api/items/**
+          filters:
+            - StripPrefix=2
+```
+
+En la sección de **filters** del microservicio "microservice-products" estamos configurando el filtro **Ejemplo** y estamos pasando los argumentos que se van a pasar a la clase **Config** que posteriormente se usan en **apply()**.
+
+Otra forma de configurar esto en el yaml es:
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=2
+            - Ejemplo=Hola mundo, cookie, cookieValue
+        - id: microservice-item
+          uri: lb://microservice-item
+          predicates:
+            - Path=/api/items/**
+          filters:
+            - StripPrefix=2
+```
+
+Ambas formas son validas, aunque la segunda es menos explicita.
+
+Para que la segunda forma funcione debemos hacer una configuración extra en la clase **EjemploGatewayFilterFactory**.
+
+```java
+@Override
+public List<String> shortcutFieldOrder() {
+    return Arrays.asList("mensaje", "cookieName", "cookieValue");
+}
+```
+
+Debemos agregar este método para indicar el orden de los argumentos que se van a pasar al filtro.
+
+También podemos personalizar el nombre del filtro ya que por defecto toma el nombre de la clase. Para esto debemos agregar la siguiente configuración:
+
+```java
+@Override
+public String name() {
+    return "EjemploCookie";
+}
+```
+
+Adicional a esto debemos cambiar el nombre que definimos para el filtro en el yaml:
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=2
+            - EjemploCookie=Hola mundo, cookie, cookieValue
+        - id: microservice-item
+          uri: lb://microservice-item
+          predicates:
+            - Path=/api/items/**
+          filters:
+            - StripPrefix=2
+```
+
+### Filtros de fabrica en Spring Cloud Gateway
+
+Spring Cloud Gateway también viene con una serie de filtros de fabrica que nos permiten modificar las peticiones y las respuestas, estos filtros son:
+
+- **AddRequestHeader**: agrega un header a la petición.
+
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=2
+            - AddRequestHeader=X-Request-Foo, Bar
+        - id: microservice-item
+          uri: lb://microservice-item
+          predicates:
+            - Path=/api/items/**
+          filters:
+            - StripPrefix=2
+```
+
+En donde **X-Request-Foo** es donde se va a agregar el header y **Bar** es el valor del header. Un ejemplo mas real seria:
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=2
+        - id: microservice-item
+            uri: lb://microservice-item
+            predicates:
+                - Path=/api/items/**
+            filters:
+                - StripPrefix=2
+                - AddRequestHeader=token-request, 123456
+```
+
+En este caso estamos agregando un header **token-request** con el valor **123456** a la petición.
+
+Luego para capturar esto en el microservicio debemos hacer lo siguiente:
+
+```java
+@GetMapping("/listar")
+public List<Producto> listar(@RequestHeader(name = "token-request", required = false) String token) {
+    log.info("Token: " + token);
+    return productoService.findAll();
+}
+```
+
+Con esto estamos capturando el header **token-request** y lo estamos imprimiendo en la consola.
+
+Otro filtro de fabrica es **AddRequestParameter** que agrega un parámetro a la petición.
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=2
+            - AddRequestParameter=param, value
+        - id: microservice-item
+          uri: lb://microservice-item
+          predicates:
+            - Path=/api/items/**
+          filters:
+            - StripPrefix=2
+```
+
+En este caso estamos agregando un parámetro **param** con el valor **value** a la petición.
+
+Luego para capturar esto en el microservicio debemos hacer lo siguiente:
+
+```java
+@GetMapping("/listar")
+public List<Producto> listar(@RequestParam(name = "param", required = false) String param) {
+    log.info("Param: " + param);
+    return productoService.findAll();
+}
+```
+
+También podemos modificar la respuesta con el filtro **AddResponseHeader**.
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=2
+        - id: microservice-item
+          uri: lb://microservice-item
+          predicates:
+            - Path=/api/items/**
+          filters:
+            - StripPrefix=2
+            - AddResponseHeader=token-response, 123456
+```
+
+Con **AddResponseHeader** podemos agregar un header a la respuesta, cualquier Header que no tenga un valor asignado puede ser modificado por este filtro.
+
+Para cambiar valores de Header que ya tienen un valor asignado debemos usar el filtro **SetResponseHeader**.
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - StripPrefix=2
+        - id: microservice-item
+          uri: lb://microservice-item
+          predicates:
+            - Path=/api/items/**
+          filters:
+            - StripPrefix=2
+            - SetResponseHeader=token-response, 123456
+```
+
+Hay que recordar que todos estos filtros se configuran en la **gateway** por lo que la utilidad de esto es que nos permite hacerle cambios a las respuestas nativas de los microservicios sin tener que modificar el código de estos.
+
+### Request Predicates Factory
+
+Los **Request Predicates Factory** nos permiten filtrar las peticiones que llegan a la **gateway**, por ejemplo podemos filtrar las peticiones por el método HTTP, por el host, por el path, por el puerto, etc.
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+            - Method=GET, POST
+            - Host=**.google.com
+            - Query=color, verde
+            - RemoteAddr=
+            - After=2021-12-31T00:00:00.000Z
+            - Before=2021-12-31T00:00:00.000Z
+            - Between=2021-12-31T00:00:00.000Z, 2021-12-31T00:00:00.000Z
+            - Cookie=cookie
+            - Header=token, \d+
+            - Host=host
+            - Method=method
+            - Path=path
+            - Port=port
+            - Query=query
+            - RemoteAddr=remoteAddr
+```
+
+Con **Path** estamos filtrando las peticiones por el path, con **Method** por el método HTTP, con **Host** por el host, con **Query** por el query, con **RemoteAddr** por la dirección IP, con **After** por la fecha después de la fecha indicada, con **Before** por la fecha antes de la fecha indicada, con **Between** por la fecha entre las fechas indicadas, con **Cookie** por la cookie, con **Header** por el header, con **Host** por el host, con **Method** por el método HTTP, con **Path** por el path, con **Port** por el puerto, con **Query** por el query, con **RemoteAddr** por la dirección IP.
+
+Son una serie de reglas que podemos definir para filtrar las peticiones que llegan a la **gateway**, para que se puedan ejecutar las peticiones a algún microservicio se deben cumplir las reglas que establecimos.
