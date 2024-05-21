@@ -1,17 +1,25 @@
 package com.dieg0code.microserviceitem.controller;
 
 import com.dieg0code.microserviceitem.models.Item;
+import com.dieg0code.microserviceitem.models.Producto;
 import com.dieg0code.microserviceitem.models.service.ItemService;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.timelimiter.annotation.TimeLimiter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 @RestController
 public class ItemController {
+
+    @Autowired
+    private CircuitBreakerFactory circuitBreakerFactory;
 
     @Autowired
     @Qualifier("serviceRestTemplate")
@@ -32,7 +40,33 @@ public class ItemController {
 
     @GetMapping("/ver/{id}/cantidad/{cantidad}")
     public Item getItemById(@PathVariable("id") Long id, @PathVariable("cantidad") Integer cantidad) {
+        return circuitBreakerFactory.create("items")
+                .run(() -> itemService.findById(id, cantidad), e -> metodoAlternativo(id, cantidad));
+    }
+
+    @CircuitBreaker(name = "items", fallbackMethod = "metodoAlternativo")
+    @GetMapping("/ver1/{id}/cantidad/{cantidad}")
+    public Item getItemById1(@PathVariable("id") Long id, @PathVariable("cantidad") Integer cantidad) {
         return itemService.findById(id, cantidad);
+    }
+
+    @TimeLimiter(name = "items", fallbackMethod = "metodoAlternativo")
+    @GetMapping("/ver2/{id}/cantidad/{cantidad}")
+    public CompletableFuture<Item> getItemById2(@PathVariable("id") Long id, @PathVariable("cantidad") Integer cantidad) {
+        return CompletableFuture.supplyAsync(() -> itemService.findById(id, cantidad));
+    }
+
+    public Item metodoAlternativo(Long id, Integer cantidad) {
+        Item item = new Item();
+        Producto producto = new Producto();
+
+        item.setCantidad(cantidad);
+        producto.setId(id);
+        producto.setNombre("Camara Sony");
+        producto.setPrecio(500.00);
+        item.setProducto(producto);
+
+        return item;
     }
 
 }

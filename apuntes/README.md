@@ -690,7 +690,7 @@ eureka.instance.instance-id=${spring.application.name}:${spring.application.inst
 
 Con esto configuramos el puerto de forma dinámica, Spring va a elegir un puerto disponible y lo va a asignar a la variable **${PORT}**, ademas configuramos el **instance-id** de forma dinámica, Spring va a asignar un id de instancia de forma automática.
 
-### Tolerancia a fallos y latencia con Hystrix
+## Tolerancia a fallos y latencia con Hystrix
 
 **Hystrix** es una librería de **Spring Cloud** que nos permite manejar fallos en la comunicación entre microservicios, añade funcionalidades para manejar la latencia y tolerancia a fallos, por ejemplo en caso de alcanzar un cierto limite de fallos en una instancia en particular, **Hystrix** deja de realizar solicitudes a esa instancia y redirige el trafico a otra instancia.
 
@@ -775,7 +775,7 @@ Con esto estamos configurando el tiempo de espera en 3 segundos, si una instanci
 
 **Hystrix** envuelve a **Ribbon** por esto el tiempo de espera de **Hytrix** es mayor al de **Ribbon**.
 
-### API Gateway con Zuul
+## API Gateway con Zuul
 
 Una **API Gateway** es un servicio que funciona como puerta de entrada a los demás microservicios, se encarga de erutar las peticiones a los microservicios correspondientes, ademas de la autenticación y autorización de los usuarios.
 
@@ -1398,3 +1398,396 @@ spring:
 Con **Path** estamos filtrando las peticiones por el path, con **Method** por el método HTTP, con **Host** por el host, con **Query** por el query, con **RemoteAddr** por la dirección IP, con **After** por la fecha después de la fecha indicada, con **Before** por la fecha antes de la fecha indicada, con **Between** por la fecha entre las fechas indicadas, con **Cookie** por la cookie, con **Header** por el header, con **Host** por el host, con **Method** por el método HTTP, con **Path** por el path, con **Port** por el puerto, con **Query** por el query, con **RemoteAddr** por la dirección IP.
 
 Son una serie de reglas que podemos definir para filtrar las peticiones que llegan a la **gateway**, para que se puedan ejecutar las peticiones a algún microservicio se deben cumplir las reglas que establecimos.
+
+## Resilience4j Resiliencia y tolerancia a fallos
+
+**Resilience4j** es el reemplazo de **Hystrix**, el cual ya no se usa en las versiones mas recientes de **Spring Boot**. **Resilience4j** es una librería que nos permite implementar tolerancia a fallos y resiliencia en nuestras aplicaciones, nos permite implementar circuit breaker, retry, rate limiter, bulkhead, etc.
+
+Muchas veces en un ecosistema de microservicios la comunicación puede fallar, puede que tarde demasiado en responder, que el servicio arroje alguna excepción o simplemente que el servicio no este disponible, para esto necesitamos implementar mecanismos que nos permitan manejar estos fallos y no afectar la disponibilidad del sistema.
+
+Para prevenir esto se suele implementar el patrón **Circuit Breaker**, este patrón nos permite manejar los fallos en la comunicación entre microservicios, si uno de ellos falla, el circuit breaker se abre y redirige el trafico a otro microservicio, una vez que el microservicio vuelve a estar disponible, el circuit breaker se cierra y redirige el trafico nuevamente al original.
+
+Es común que algunos servicios sean dependientes de otros, ya sea para obtener información o para realizar alguna acción, si uno de estos servicios falla, el servicio que depende de este también fallará y el que depende de este y así sucesivamente, esto se conoce como **cascada de fallos**, si falla uno falla toda la cadena.
+
+### Resilience4j
+
+Desde Spring Cloud 2020.0.0 Ilford y Spring Boot 2.4.1, se comenzó a usar por defecto **Resilience4j** en lugar de **Hystrix**, que ahora se encuentra en modo de mantenimiento.
+
+#### Estados del Circuit Breaker
+
+- **CLOSED**: el circuit breaker esta cerrado, el servicio esta disponible y se puede acceder a el. Si la taza de fallos supera el umbral, el circuit breaker se abre.
+- **OPEN**: el circuit breaker esta abierto, el servicio no esta disponible y se redirige el trafico a otro servicio. Luego de un tiempo el circuit breaker se cierra y se vuelve a intentar acceder al servicio.
+- **HALF_OPEN**: el circuit breaker esta medio abierto, se esta probando la disponibilidad del servicio, si el servicio esta disponible es decir la taza de fallos es menor al umbral, el circuit breaker se cierra, si no se vuelve a abrir.
+
+#### Parámetros del Circuit Breaker
+
+- **slidingWindowSize(100)**: tamaño de la ventana de tiempo, por defecto 100. Es el numero de peticiones que se van a monitorear, por defecto 100, en base a eso se va a calcular la taza de fallos, si esta tasas supera el umbral que configuramos, el circuit breaker se abre.
+- **failureRateThreshold(50)**: umbral de fallos, por defecto 50. Es el porcentaje de fallos que se van a permitir, si la taza de fallos supera este umbral, el circuit breaker se abre.
+- **waitDurationInOpenState(60000 ms)**: tiempo de espera en el estado abierto, por defecto 60 segundos. Es el tiempo que se va a esperar antes de volver a intentar acceder al servicio, si el circuit breaker esta abierto.
+- **permittedNumberOfCallsInHalfOpenState(10)**: numero de peticiones permitidas en el estado medio abierto, por defecto 10. Es el numero de peticiones de prueba que se van a hacer para determinar si el servicio esta disponible, si la taza de fallos es menor al umbral, el circuit breaker se cierra, si no se vuelve a abrir.
+- **slowCallRateThreshold(100)**: umbral de llamadas lentas, por defecto 100. Es el porcentaje de llamadas lentas que se van a permitir, si la taza de llamadas lentas supera este umbral, el circuit breaker se abre.
+- **slowCallDurationThreshold(60000 ms)**: duración de llamadas lentas, por defecto 60 segundos. Es el tiempo que se va a considerar como una llamada lenta, si una llamada supera este tiempo, se considera lenta.
+
+Para configurar el circuit breaker debemos agregar las dependencias de **Resilience4j** en el `pom.xml`.
+
+```xml
+		<dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
+		</dependency>
+```
+
+Ademas de la dependencia de **bootstrap**
+
+```xml
+		<dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>spring-cloud-starter-bootstrap</artifactId>
+		</dependency>
+```
+
+Esta dependencia es necesaria porque **Resilience4j** necesita que se carguen las propiedades de configuración antes de que se cargue el contexto de la aplicación.
+
+Debemos recordar que estas configuraciones son en el microservicio de item.
+
+Luego debemos configurar el archivo `application.properties`.
+
+```properties
+spring.config.import=optional:configserver:
+```
+
+Esta configuración la dejamos para después cuando usemos **Spring Cloud Config** como servidor de configuración.
+
+Para configurar el circuit breaker podemos inyectar la dependencia en el controlador.
+
+```java
+@RestController
+public class ItemController {
+
+   @Autowired
+    private CircuitBreakerFactory circuitBreakerFactory;
+
+    @Autowired
+    private ItemService itemService;
+
+      @GetMapping("/ver/{id}/cantidad/{cantidad}")
+    public Item getItemById(@PathVariable("id") Long id, @PathVariable("cantidad") Integer cantidad) {
+        return circuitBreakerFactory.create("items")
+                .run(() -> itemService.findById(id, cantidad), e -> metodoAlternativo(id, cantidad));
+    }
+
+        public Item metodoAlternativo(Long id, Integer cantidad) {
+        Item item = new Item();
+        Producto producto = new Producto();
+
+        item.setCantidad(cantidad);
+        producto.setId(id);
+        producto.setNombre("Camara Sony");
+        producto.setPrecio(500.00);
+        item.setProducto(producto);
+
+        return item;
+    }
+}
+```
+
+Lo que estamos haciendo es crear un nuevo circuit breaker con el nombre **items** y estamos ejecutando el método **findById()** del servicio **itemService**, si este método falla, se ejecuta el método **metodoAlternativo()**.
+
+### Personalizando parámetros del Circuit Breaker
+
+Podemos configurar configurar ciertos parámetros del circuit breaker como el tamaño de la ventana de tiempo, el umbral de fallos, el tiempo de espera en el estado abierto, etc. Para esto podemos usar una clase de configuración.
+
+```java
+@Configuration
+public class CircuitBreakerConfig {
+
+       @Bean
+    public Customizer<Resilience4JCircuitBreakerFactory> defaultCustomizer() {
+        return factory -> factory.configureDefault(id -> new Resilience4JConfigBuilder(id)
+                .circuitBreakerConfig(CircuitBreakerConfig.custom()
+                        .slidingWindowSize(10)
+                        .failureRateThreshold(50)
+                        .waitDurationInOpenState(Duration.ofSeconds(10L))
+                        .build())
+                .timeLimiterConfig(TimeLimiterConfig.ofDefaults())
+                .build());
+    }
+}
+```
+
+Con esto establecemos de forma customizada todos los valores para las configuraciones que nos interesan, en este caso estamos configurando el tamaño de la ventana de tiempo en 10, el umbral de fallos en 50, el tiempo de espera en el estado abierto en 10 segundos, etc.
+
+En esta configuración estamos estableciendo estos parámetros para todos los circuit breaker que se creen en la aplicación, si queremos establecer estos parámetros para un circuit breaker en especifico debemos hacerlo de la siguiente forma.
+
+```java
+@Configuration
+public class CircuitBreakerConfig {
+
+    @Bean
+    public Customizer<Resilience4JCircuitBreakerFactory> defaultCustomizer() {
+        return factory -> factory.configure(builder -> builder
+                .circuitBreakerConfig(CircuitBreakerConfig.custom()
+                        .slidingWindowSize(10)
+                        .failureRateThreshold(50)
+                        .waitDurationInOpenState(Duration.ofSeconds(10L))
+                        .build())
+                .timeLimiterConfig(TimeLimiterConfig.ofDefaults())
+                .build(), "items");
+    }
+}
+```
+
+Con esto estamos estableciendo estos parámetros para el circuit breaker con el nombre **items**.
+
+También podemos customizar el TimeLimiter, el cual nos permite establecer un tiempo de espera para las peticiones.
+
+```java
+@Configuration
+public class CircuitBreakerConfig {
+
+    @Bean
+    public Customizer<Resilience4JCircuitBreakerFactory> defaultCustomizer() {
+        return factory -> factory.configure(builder -> builder
+                .circuitBreakerConfig(CircuitBreakerConfig.custom()
+                        .slidingWindowSize(10)
+                        .failureRateThreshold(50)
+                        .waitDurationInOpenState(Duration.ofSeconds(10L))
+                        .build())
+                .timeLimiterConfig(TimeLimiterConfig.custom()
+                        .timeoutDuration(Duration.ofSeconds(5L))
+                        .build())
+                .build(), "items");
+    }
+}
+```
+
+### Llamadas lentas
+
+**Resilience4j** nos permite configurar un tiempo de espera para las peticiones, si una petición supera este tiempo, se considera una llamada lenta y se puede configurar un umbral para las llamadas lentas.
+
+```java
+@Configuration
+public class CircuitBreakerConfig {
+
+    @Bean
+    public Customizer<Resilience4JCircuitBreakerFactory> defaultCustomizer() {
+        return factory -> factory.configure(builder -> builder
+                .circuitBreakerConfig(CircuitBreakerConfig.custom()
+                        .slidingWindowSize(10)
+                        .failureRateThreshold(50)
+                        .waitDurationInOpenState(Duration.ofSeconds(10L))
+                        .slowCallRateThreshold(50)
+                        .slowCallDurationThreshold(Duration.ofSeconds(5L))
+                        .build())
+                .timeLimiterConfig(TimeLimiterConfig.custom()
+                        .timeoutDuration(Duration.ofSeconds(5L))
+                        .build())
+                .build(), "items");
+    }
+}
+```
+
+### Configurar Resilience4j con application.yaml
+
+Podemos configurar **Resilience4j** con el archivo **application.yaml**.
+
+```yaml
+resilience4j:
+  circuitbreaker:
+    configs:
+      defecto:
+        sliding-window-size: 6
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 3
+    instances:
+      items:
+        base-config: defecto
+  timelimiter:
+    configs:
+      defecto:
+        timeout-duration: 2s
+    instances:
+        items:
+            base-config: defecto
+```
+
+Con esto nos ahorramos configurar estos parámetros en una clase de configuración.
+
+Tambien podemos hacer esta misma configuración en un archivo **application.properties**.
+
+```properties
+resilience4j.circuitbreaker.configs.defecto.sliding-window-size=6
+resilience4j.circuitbreaker.configs.defecto.failure-rate-threshold=50
+resilience4j.circuitbreaker.configs.defecto.wait-duration-in-open-state=20s
+resilience4j.circuitbreaker.configs.defecto.permitted-number-of-calls-in-half-open-state=4
+resilience4j.circuitbreaker.configs.defecto.slow-call-rate-threshold=50
+resilience4j.circuitbreaker.configs.defecto.slow-call-duration-threshold=2s
+resilience4j.circuitbreaker.instances.items.base-config=defecto
+ 
+resilience4j.timelimiter.configs.defecto.timeout-duration=2s
+resilience4j.timelimiter.instances.items.base-config=defecto
+```
+
+Equivalente a:
+
+```yaml
+resilience4j:
+  circuitbreaker:
+    configs:
+      defecto:
+        sliding-window-size: 6
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 4
+        slow-call-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+    instances:
+      items:
+        base-config: defecto
+  timelimiter:
+    configs:
+      defecto:
+        timeout-duration: 2s
+    instances:
+      items:
+        base-config: defecto
+```
+
+### Anotación @CircuitBreaker
+
+Con la anotación **@CircuitBreaker** podemos configurar el circuit breaker en el método que queramos.
+
+```java
+    @CircuitBreaker(name = "items", fallbackMethod = "metodoAlternativo")
+    @GetMapping("/ver1/{id}/cantidad/{cantidad}")
+    public Item getItemById1(@PathVariable("id") Long id, @PathVariable("cantidad") Integer cantidad) {
+        return itemService.findById(id, cantidad);
+    }
+
+    public Item metodoAlternativo(Long id, Integer cantidad, Throwable e) {
+        Item item = new Item();
+        Producto producto = new Producto();
+
+        item.setCantidad(cantidad);
+        producto.setId(id);
+        producto.setNombre("Camara Sony");
+        producto.setPrecio(500.00);
+        item.setProducto(producto);
+
+        return item;
+    }
+
+```
+
+La diferencia de esta forma de configurar el circuit breaker es que solo funcionan los parámetros definidos en **application.yaml** o **application.properties**, a diferencia de la otra forma en la que podíamos personalizar los parámetros en la clase de configuración.
+
+### Anotación @TimeLimiter
+
+Similar a la anotación **@CircuitBreaker** podemos configurar el tiempo de espera de una petición con la anotación **@TimeLimiter**.
+
+```java
+    @TimeLimiter(name = "items", fallbackMethod = "metodoAlternativo")
+    @GetMapping("/ver2/{id}/cantidad/{cantidad}")
+    public CompletableFuture<Item> getItemById2(@PathVariable("id") Long id, @PathVariable("cantidad") Integer cantidad) {
+        return CompletableFuture.supplyAsync(() -> itemService.findById(id, cantidad));
+    }
+```
+
+Esta anotación varia un poco ya que es necesario que el método retorne un **CompletableFuture**, esto es porque el método se va a ejecutar de forma asíncrona.
+
+Debido a esto el metodo alternativo también debe retornar un **CompletableFuture**.
+
+```java
+    public CompletableFuture<Item> metodoAlternativo(Long id, Integer cantidad, Throwable e) {
+        Item item = new Item();
+        Producto producto = new Producto();
+
+        item.setCantidad(cantidad);
+        producto.setId(id);
+        producto.setNombre("Camara Sony");
+        producto.setPrecio(500.00);
+        item.setProducto(producto);
+
+        return CompletableFuture.completedFuture(item);
+    }
+```
+
+También es posible combinar ambas anotaciones en caso de que se necesite.
+
+```java
+    @CircuitBreaker(name = "items", fallbackMethod = "metodoAlternativo")
+    @TimeLimiter(name = "items")
+    @GetMapping("/ver3/{id}/cantidad/{cantidad}")
+    public CompletableFuture<Item> getItemById3(@PathVariable("id") Long id, @PathVariable("cantidad") Integer cantidad) {
+        return CompletableFuture.supplyAsync(() -> itemService.findById(id, cantidad));
+    }
+```
+
+Esto es util en caso de que se quiera configurar una lógica alternativa en ambos casos, que algún método falle o que se supere el tiempo de espera.
+
+Es importante que si vamos a usar ambas anotaciones, el **fallbackMethod** no debe estar en **@TimeLimiter**, o en ninguno, o solo en el **@CircuitBreaker**.
+
+### Spring Cloud Gateway con Resilience4j
+
+Podemos agregar **Resilience4j** a la **gateway** para que esta tenga tolerancia a fallos. No es la misma dependencia que usamos en el microservicio, debemos agregar la dependencia de **Spring Cloud Gateway Resilience4j** en el `pom.xml`.
+
+```xml
+	<dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>spring-cloud-starter-circuitbreaker-reactor-resilience4j</artifactId>
+		</dependency>
+```
+
+Luego debemos configurar el archivo `application.yaml`.
+
+```yaml
+resilience4j:
+  circuitbreaker:
+    configs:
+      defecto:
+        sliding-window-size: 6
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 4
+        slow-call-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+    instances:
+      products:
+        base-config: defecto
+  timelimiter:
+    configs:
+      defecto:
+        timeout-duration: 2s
+    instances:
+      products:
+        base-config: defecto
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: products
+                statusCodes: 500
+                fallbackUri: forward:/api/items/ver/9/cantidad/1
+            - StripPrefix=2
+            - name: Ejemplo
+              args:
+                mensaje: Hola Mundo
+                cookieName: cookie
+                cookieValue: cookieValue
+        - id: microservice-item
+          uri: lb://microservice-item
+          predicates:
+            - Path=/api/items/**
+          filters:
+            - StripPrefix=2
+```
+
+Con esto estamos configurando el circuit breaker en la **gateway** para que tenga tolerancia a fallos, si el servicio **products** falla, se redirige el trafico al servicio **items**, específicamente a la ruta **/api/items/ver/9/cantidad/1**.
