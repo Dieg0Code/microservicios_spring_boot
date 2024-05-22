@@ -1791,3 +1791,60 @@ spring:
 ```
 
 Con esto estamos configurando el circuit breaker en la **gateway** para que tenga tolerancia a fallos, si el servicio **products** falla, se redirige el trafico al servicio **items**, específicamente a la ruta **/api/items/ver/9/cantidad/1**.
+
+## Spring Cloud Config Server
+
+**Spring Cloud Config Server** es un servidor de configuración que nos permite centralizar las configuraciones de nuestras aplicaciones, esto significa que podemos centralizar configuraciones como puertos, rutas, nombres de servicios, etc. en un solo lugar y que nuestras aplicaciones puedan acceder a estas configuraciones y usarlas.
+
+Cuando se inicia un microservicio, antes de registrarse en Eureka hace una petición al servidor de configuración para obtener las configuraciones, luego se registra en Eureka y ya puede ser accedido por otros microservicios.
+
+Para comenzar debemos crear un nuevo proyecto de **Spring Boot** con las dependencias de **Spring Cloud Config Server**.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-config-server</artifactId>
+    </dependency>
+```
+
+Luego hay que agregar la anotación **@EnableConfigServer** en la clase principal.
+
+```java
+@EnableConfigServer
+@SpringBootApplication
+public class SpringCloudConfigServerApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(SpringCloudConfigServerApplication.class, args);
+    }
+
+}
+```
+
+También debemos configurar el archivo `application.properties`.
+
+```properties
+spring.application.name=config-server
+server.port=8888
+
+spring.cloud.config.server.git.uri=
+```
+
+En la propiedad **spring.cloud.config.server.git.uri** debemos indicar la dirección del repositorio de **Git** donde vamos a almacenar las configuraciones. Puede ser un directorio local o un repositorio remoto.
+
+Por ejemplo si queremos almacenar las configuraciones en un repositorio de **Git** local debemos hacer lo siguiente.
+
+```properties
+spring.application.name=config-server
+server.port=8888
+
+spring.cloud.config.server.git.uri=file:///C:/Users/diego/Documents/conf
+```
+
+Luego en esa carpeta que establecimos como la carpeta en donde va a estar nuestra configuración debemos crear un archivo llamado **application.properties**.
+
+```properties
+server.port=8001
+```
+
+Y en ese archivo podemos establecer las configuraciones que queremos que tengan nuestros microservicios.
