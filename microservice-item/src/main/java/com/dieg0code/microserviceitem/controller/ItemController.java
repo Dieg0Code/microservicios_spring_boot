@@ -7,13 +7,21 @@ import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.timelimiter.annotation.TimeLimiter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+
+import static org.springframework.http.ResponseEntity.ok;
+
 
 @RestController
 public class ItemController {
@@ -24,6 +32,9 @@ public class ItemController {
     @Autowired
     @Qualifier("serviceRestTemplate")
     private ItemService itemService;
+
+    @Value("${configuracion.mensaje}")
+    private String texto;
 
     // ******************************************************************************************
     // ******************************************************************************************
@@ -67,6 +78,17 @@ public class ItemController {
         item.setProducto(producto);
 
         return item;
+    }
+
+    // ******************************************************************************************
+    // ******************************************************************************************
+    // ******************************************************************************************
+
+    @GetMapping("/obtener-config")
+    public ResponseEntity<?> obtenerConfig() {
+        Map<String, String> json = new HashMap<>();
+        json.put("texto", texto);
+        return new ResponseEntity<Map<String, String>>(json, HttpStatus.OK);
     }
 
 }

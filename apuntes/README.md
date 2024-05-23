@@ -1844,7 +1844,196 @@ spring.cloud.config.server.git.uri=file:///C:/Users/diego/Documents/conf
 Luego en esa carpeta que establecimos como la carpeta en donde va a estar nuestra configuración debemos crear un archivo llamado **application.properties**.
 
 ```properties
-server.port=8001
+server.port=8081
+configuracion.mensaje=Hola mundo desde microservicio item
 ```
 
 Y en ese archivo podemos establecer las configuraciones que queremos que tengan nuestros microservicios.
+
+Luego podemos hacer andar el servidor de configuración y acceder a las configuraciones desde **localhost:8888/nombre-del-microservicio/default**.
+
+```json
+{
+  "name": "microservice-item",
+  "profiles": [
+    "default"
+  ],
+  "label": null,
+  "version": "a671ca898d399a75a23abe238be54e6f30342ffa",
+  "state": null,
+  "propertySources": [
+    {
+      "name": "file:///C:/Users/Diego Obando/Desktop/conf/file:/C:/Users/Diego Obando/Desktop/conf/microservice-item.properties",
+      "source": {
+        "server.port": "8081",
+        "configuracion.mensaje": "Hola mundo desde microservicio item"
+      }
+    }
+  ]
+}
+```
+
+Para que el o los microservicios puedan acceder a estas configuraciones es necesario instalar en ellos la dependencia de **Config Client**.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-config</artifactId>
+    </dependency>
+```
+
+Ademas debemos tener en el microservicio la dependencia de **bootstrap**.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-bootstrap</artifactId>
+    </dependency>
+```
+
+Y crear el archivo `bootstrap.properties`.
+
+```properties
+spring.application.name=microservice-item
+spring.cloud.config.uri=http://localhost:8888
+```
+
+Para definir el nombre del microservicio y la dirección del servidor de configuración.
+
+### Leer configuraciones desde el controlador usando @Value
+
+Podemos leer las configuraciones desde el controlador usando la anotación **@Value**.
+
+```java
+@RestController
+public class ItemController {
+
+    @Value("${configuracion.mensaje}")
+    private String mensaje;
+
+
+    @GetMapping("/obtener-config")
+    public ResponseEntity<?> obtenerConfig() {
+        Map<String, String> json = new HashMap<>();
+        json.put("texto", texto);
+        return new ResponseEntity<Map<String, String>>(json, HttpStatus.OK);
+    }
+}
+```
+
+Con esto estamos leyendo la configuración **configuracion.mensaje** y la estamos mostrando en un endpoint.
+
+### Configuración de ambientes
+
+Podemos configurar diferentes ambientes mediante el archivo de configuración, para esto debemos crear un nuevo archivo de configuración llamado por ejemplo **microservice-item-dev.properties**.
+
+```properties
+configuracion.mensaje=Hola mundo desde microservicio item en ambiente de desarrollo
+configuracion.autor.nombre=Diego
+configuracion.autor.email=example@example.com
+```
+
+También podemos crear un archivo de configuración llamado **microservice-item-prod.properties**.
+
+```properties
+configuracion.mensaje=Hola mundo desde microservicio item en ambiente de producción
+configuracion.autor.nombre=Diego
+configuracion.autor.email=example@example.com
+```
+
+Para establcer el ambiente debemos agregar la propiedad **spring.profiles.active** en el archivo `bootstrap.properties`.
+
+```properties
+spring.application.name=microservice-item
+spring.cloud.config.uri=http://localhost:8888
+spring.profiles.active=dev
+```
+
+Luego para poder acceder a estas configuraciones desde el servicio necesitamos saber en que ambiente estamos, para esto podemos inyectar en el controlador la dependencia **Environment**.
+
+```java
+@RestController
+public class ItemController {
+
+    @Autowired
+    private Environment env;
+
+    @Value("${configuracion.mensaje}")
+    private String mensaje;
+
+    @GetMapping("/obtener-config")
+    public ResponseEntity<?> obtenerConfig() {
+        Map<String, String> json = new HashMap<>();
+        json.put("texto", texto);
+
+        if (env.getActiveProfiles().length > 0 && env.getActiveProfiles()[0].equals("dev")) {
+            json.put("autor", env.getProperty("configuracion.autor.nombre") + " - " + env.getProperty("configuracion.autor.email"));
+        }
+
+        return new ResponseEntity<Map<String, String>>(json, HttpStatus.OK);
+    }
+}
+```
+
+### Actualizar cambios en la configuración con @RefreshScope y Actuator
+
+Para que los cambios en la configuración se reflejen en el microservicio debemos agregar la anotación **@RefreshScope** en el controlador.
+
+```java
+@RefreshScope
+@RestController
+public class ItemController {
+
+    @Autowired
+    private Environment env;
+
+    @Value("${configuracion.mensaje}")
+    private String mensaje;
+
+    @GetMapping("/obtener-config")
+    public ResponseEntity<?> obtenerConfig() {
+        Map<String, String> json = new HashMap<>();
+        json.put("texto", texto);
+
+        if (env.getActiveProfiles().length > 0 && env.getActiveProfiles()[0].equals("dev")) {
+            json.put("autor", env.getProperty("configuracion.autor.nombre") + " - " + env.getProperty("configuracion.autor.email"));
+        }
+
+        return new ResponseEntity<Map<String, String>>(json, HttpStatus.OK);
+    }
+}
+```
+
+Esta anotación nos permite actualizar los componentes, controladores, clases anotadas con **@Component**, etc. sin tener que reiniciar el microservicio, refresca el contexto de la aplicación cada vez que hay cambios en la configuración.
+
+Esta actualización requiere que definamos una ruta la cual será usada para refrescar la configuración, para esto debemos agregar la dependencia de **Actuator** en el `pom.xml`.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+```
+
+Luego en el archivo `bootstrap.properties` debemos agregar la propiedad **management.endpoints.web.exposure.include=refresh**.
+
+```properties
+spring.application.name=microservice-item
+spring.profiles.active=dev
+spring.cloud.config.uri=http://localhost:8888
+management.endpoints.web.exposure.include=*
+```
+
+Con el `*` estamos indicando que se expongan todos los endpoints.
+
+Con esto cuando realicemos un cambio en los archivos de configuración y hagamos commit de estos, podemos hacer que se actualicen los microservicios sin tener que reiniciarlos.
+
+Entonces cuando queramos actualizar la configuración debemos hacer una petición **POST** a la ruta **/actuator/refresh**.
+
+```bash
+curl -X POST http://localhost:8081/actuator/refresh
+```
+
+Y con esto los cambios en la configuración se reflejaran en el microservicio.
+
+Estos cambios a configuraciones solo funcionan con aquellas que hallamos definido nosotros, aquellas como el puerto, la dirección de la base de datos, etc. no se pueden actualizar de esta forma, para esto debemos reiniciar el microservicio.
