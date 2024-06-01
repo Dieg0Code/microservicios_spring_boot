@@ -4055,3 +4055,104 @@ public class SpringSecurityConfig {
     }
 }
 ```
+
+## Base de datos MySQL
+
+Vamos a agregarle una base de datos al microservicio de productos, para esto hay que agregar la dependencia de MySQL.
+
+```xml
+<dependency>
+    <groupId>com.mysql</groupId>
+        <artifactId>mysql-connector-j</artifactId>
+    <scope>runtime</scope>
+</dependency>
+```
+
+despues hay que configurar la conexión a la base de datos en el archivo **application.properties**.
+
+```properties
+spring.datasource.url=jdbc:mysql://localhost:3306/microservice-products?serverTimezone=Ameria/Santiago&allowPublicKeyRetrieval=true&useSSL=false
+spring.datasource.username=root
+spring.datasource.password=root
+spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
+spring.jpa.database-platform=org.hibernate.dialect.MySQL8Dialect
+spring.jpa.hibernate.ddl-auto=create
+
+logging.level.org.hibernate.SQL=debug
+```
+
+### Configurando ambiente dev con MySQL en Servidor de Configuración
+
+Podemos configurar el servidor de configuración para que tenga un ambiente de desarrollo con MySQL, para esto debemos crear un archivo **microservice-products-dev.properties** en la carpeta **config** del servidor de configuración.
+
+```properties
+spring.datasource.url=jdbc:mysql://localhost:3306/microservice-products?serverTimezone=Ameria/Santiago&allowPublicKeyRetrieval=true&useSSL=false
+spring.datasource.username=root
+spring.datasource.password=root
+spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
+spring.jpa.database-platform=org.hibernate.dialect.MySQL8Dialect
+spring.jpa.hibernate.ddl-auto=create
+
+logging.level.org.hibernate.SQL=debug
+```
+
+Con esto desacomplamos la configuración de la base de datos del código del microservicio.
+
+Lo siguiente es agregar la dependencia de **Spring Cloud Config Client** al microservicio de productos.
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-config</artifactId>
+</dependency>
+```
+
+Y creamos el archivo **bootstrap.properties**.
+
+```properties
+spring.application.name=microservice-products
+spring.profiles.active=dev
+spring.cloud.config.uri=http://localhost:8888
+```
+
+## PostgreSQL
+
+Para el microservicio de usuarios vamos a usar una base de datos PostgreSQL, para esto hay que agregar la dependencia de PostgreSQL.
+
+```xml
+<dependency>
+    <groupId>org.postgresql</groupId>
+    <artifactId>postgresql</artifactId>
+    <scope>runtime</scope>
+</dependency>
+```
+
+Agregar la configuración de la base de datos al servidor de configuración en el archivo **microservice-users-dev.properties**.
+
+```properties
+spring.datasource.url=jdbc:postgresql://localhost:5432/microservice-users
+spring.datasource.username=postgres
+spring.datasource.password=postgres
+spring.datasource.driver-class-name=org.postgresql.Driver
+spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect
+spring.jpa.hibernate.ddl-auto=create
+
+logging.level.org.hibernate.SQL=debug
+
+spring.jpa.properties.hibernate.jdbc.lob.non_contextual_creation=true
+```
+
+### Configurar el repositorio remoto de configuración como privado
+
+Lo normal seria que nuestro repositorio de configuración sea privado, para esto hay que configurar el archivo **application.properties** del servidor de configuración.
+
+```properties
+spring.application.name=config-server
+server.port=8888
+
+spring.cloud.config.server.git.uri=http://github.com/user/config-repo.git
+spring.cloud.config.server.git.username=user
+spring.cloud.config.server.git.password=password
+```
+
+Con esto estamos indicando que el repositorio de configuración es privado y que necesita un usuario y contraseña para acceder.
