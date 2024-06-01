@@ -11,9 +11,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
 import java.util.List;
@@ -89,6 +87,36 @@ public class ItemController {
         Map<String, String> json = new HashMap<>();
         json.put("texto", texto);
         return new ResponseEntity<Map<String, String>>(json, HttpStatus.OK);
+    }
+
+    // ******************************************************************************************
+    // ******************************************************************************************
+    // ******************************************************************************************
+
+    @PostMapping("/crear")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Producto saveProduct(Producto producto) {
+        return itemService.save(producto);
+    }
+
+    // ******************************************************************************************
+    // ******************************************************************************************
+    // ******************************************************************************************
+
+    @PostMapping("/editar/{id}")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Producto updateProduct(@PathVariable Long id, Producto producto) {
+        return itemService.update(producto, id);
+    }
+
+    // ******************************************************************************************
+    // ******************************************************************************************
+    // ******************************************************************************************
+
+    @DeleteMapping("/eliminar/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteProduct(@PathVariable Long id) {
+        itemService.delete(id);
     }
 
 }

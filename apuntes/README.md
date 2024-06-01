@@ -2037,3 +2037,2021 @@ curl -X POST http://localhost:8081/actuator/refresh
 Y con esto los cambios en la configuración se reflejaran en el microservicio.
 
 Estos cambios a configuraciones solo funcionan con aquellas que hallamos definido nosotros, aquellas como el puerto, la dirección de la base de datos, etc. no se pueden actualizar de esta forma, para esto debemos reiniciar el microservicio.
+
+## CRUD consumiendo los servicios con Feign y RestTemplate
+
+Debemos terminar de crear las operaciones de **CRUD** en los microservicios.
+
+Primero el microservicio de productos.
+
+```java
+public interface IProductoService {
+
+    public List<Producto> findAll();
+
+    public Producto findById(Long id);
+
+    public Producto save(Producto producto);
+
+    public void deletById(Long id);
+
+}
+```
+
+```java
+@Service
+public class ProductoServiceImpl implements IProductoService{
+
+    @Autowired
+    private ProductoDAO productoDAO;
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<Producto> findAll() {
+        return (List<Producto>) productoDAO.findAll();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Producto findById(Long id) {
+        return productoDAO.findById(id).orElseThrow();
+    }
+
+    @Override
+    @Transactional
+    public Producto save(Producto producto) {
+        return productoDAO.save(producto);
+    }
+
+    @Override
+    @Transactional
+    public void deletById(Long id) {
+        productoDAO.deleteById(id);
+    }
+}
+```
+
+```java
+@RestController
+public class ProductoController {
+
+    @Autowired
+    private IProductoService productoService;
+
+    // ****************************************************************************************
+    // ****************************************************************************************
+    // ****************************************************************************************
+
+    @GetMapping("/listar")
+    public List<Producto> getAllProducts() {
+        return productoService.findAll();
+    }
+
+    // ****************************************************************************************
+    // ****************************************************************************************
+    // ****************************************************************************************
+
+    @GetMapping("/ver/{id}")
+    public Producto getProductById(@PathVariable("id") Long id) {
+        return productoService.findById(id);
+    }
+
+    // ****************************************************************************************
+    // ****************************************************************************************
+    // ****************************************************************************************
+
+    @PostMapping("/crear")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Producto createProduct(@RequestBody Producto producto) {
+        return productoService.save(producto);
+    }
+
+    // ****************************************************************************************
+    // ****************************************************************************************
+    // ****************************************************************************************
+
+    @PutMapping("/editar/{id}")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Producto updateProduct(@RequestBody Producto producto, @PathVariable("id") Long id) {
+        Producto product = productoService.findById(id);
+        product.setNombre(producto.getNombre());
+        product.setPrecio(producto.getPrecio());
+        return productoService.save(product);
+    }
+
+    // ****************************************************************************************
+    // ****************************************************************************************
+    // ****************************************************************************************
+
+    @DeleteMapping("/eliminar/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteProduct(@PathVariable("id") Long id) {
+        productoService.deletById(id);
+    }
+}
+```
+
+Luego el microservicio de items.
+
+```java
+public interface ItemService {
+
+    public List<Item> findAll();
+    public Item findById(Long id, Integer cantidad);
+    public Producto save(Producto producto);
+    public Producto update(Producto producto, Long id);
+    public void delete(Long id);
+
+}
+```
+
+```java
+@Service("serviceRestTemplate")
+public class ItemServiceImpl implements ItemService{
+
+    @Autowired
+    private RestTemplate clienteRest;
+
+    @Override
+    public List<Item> findAll() {
+        List<Producto> productos = Arrays.asList(clienteRest.getForObject("http://microservice-products/listar", Producto[].class));
+        return productos.stream().map(p -> new Item(p, 1)).collect(Collectors.toList());
+    }
+
+    @Override
+    public Item findById(Long id, Integer cantidad) {
+        Map<String, String> pathVariables = new HashMap<>();
+        pathVariables.put("id", id.toString());
+        Producto producto = clienteRest.getForObject("http://microservice-products/ver/{id}", Producto.class, pathVariables);
+        return new Item(producto, cantidad);
+    }
+
+    @Override
+    public Producto save(Producto producto) {
+        HttpEntity<Producto> body = new HttpEntity<>(producto);
+        ResponseEntity<Producto> response = clienteRest.exchange("http://microservice-products/crear", HttpMethod.POST, body, Producto.class);
+
+        return response.getBody();
+    }
+
+    @Override
+    public Producto update(Producto producto, Long id) {
+        HttpEntity<Producto> body = new HttpEntity<>(producto);
+        Map<String, String> pathVariables = new HashMap<>();
+        pathVariables.put("id", id.toString());
+        ResponseEntity<Producto> response = clienteRest.exchange("http://microservice-products/editar/{id}", HttpMethod.PUT, body, Producto.class, pathVariables);
+
+        return response.getBody();
+    }
+
+    @Override
+    public void delete(Long id) {
+        Map<String, String> pathVariables = new HashMap<>();
+        pathVariables.put("id", id.toString());
+        clienteRest.delete("http://microservice-products/eliminar/{id}", pathVariables);
+    }
+}
+```
+
+```java
+@RestController
+public class ItemController {
+
+    @Autowired
+    private CircuitBreakerFactory circuitBreakerFactory;
+
+    @Autowired
+    @Qualifier("serviceRestTemplate")
+    private ItemService itemService;
+
+    @Value("${configuracion.mensaje}")
+    private String texto;
+
+    // ******************************************************************************************
+    // ******************************************************************************************
+    // ******************************************************************************************
+
+    @GetMapping("/listar")
+    public List<Item> getAllItems() {
+        return itemService.findAll();
+    }
+
+    // ******************************************************************************************
+    // ******************************************************************************************
+    // ******************************************************************************************
+
+    @GetMapping("/ver/{id}/cantidad/{cantidad}")
+    public Item getItemById(@PathVariable("id") Long id, @PathVariable("cantidad") Integer cantidad) {
+        return circuitBreakerFactory.create("items")
+                .run(() -> itemService.findById(id, cantidad), e -> metodoAlternativo(id, cantidad));
+    }
+
+    @CircuitBreaker(name = "items", fallbackMethod = "metodoAlternativo")
+    @GetMapping("/ver1/{id}/cantidad/{cantidad}")
+    public Item getItemById1(@PathVariable("id") Long id, @PathVariable("cantidad") Integer cantidad) {
+        return itemService.findById(id, cantidad);
+    }
+
+    @TimeLimiter(name = "items", fallbackMethod = "metodoAlternativo")
+    @GetMapping("/ver2/{id}/cantidad/{cantidad}")
+    public CompletableFuture<Item> getItemById2(@PathVariable("id") Long id, @PathVariable("cantidad") Integer cantidad) {
+        return CompletableFuture.supplyAsync(() -> itemService.findById(id, cantidad));
+    }
+
+    public Item metodoAlternativo(Long id, Integer cantidad) {
+        Item item = new Item();
+        Producto producto = new Producto();
+
+        item.setCantidad(cantidad);
+        producto.setId(id);
+        producto.setNombre("Camara Sony");
+        producto.setPrecio(500.00);
+        item.setProducto(producto);
+
+        return item;
+    }
+
+    // ******************************************************************************************
+    // ******************************************************************************************
+    // ******************************************************************************************
+
+    @GetMapping("/obtener-config")
+    public ResponseEntity<?> obtenerConfig() {
+        Map<String, String> json = new HashMap<>();
+        json.put("texto", texto);
+        return new ResponseEntity<Map<String, String>>(json, HttpStatus.OK);
+    }
+
+    // ******************************************************************************************
+    // ******************************************************************************************
+    // ******************************************************************************************
+
+    @PostMapping("/crear")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Producto saveProduct(Producto producto) {
+        return itemService.save(producto);
+    }
+
+    // ******************************************************************************************
+    // ******************************************************************************************
+    // ******************************************************************************************
+
+    @PostMapping("/editar/{id}")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Producto updateProduct(@PathVariable Long id, Producto producto) {
+        return itemService.update(producto, id);
+    }
+
+    // ******************************************************************************************
+    // ******************************************************************************************
+    // ******************************************************************************************
+
+    @DeleteMapping("/eliminar/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteProduct(@PathVariable Long id) {
+        itemService.delete(id);
+    }
+
+}
+```
+
+## Servicio commons: librería de utilidades
+
+Para no tener que repetir código en los microservicios podemos crear una librería de utilidades que contenga clases y métodos que se puedan reutilizar en los microservicios.
+
+Por ejemplo, en ambos estamos usando la entidad producto, esta la podemos reutilizar en ambos abstraiéndola en una librería de utilidades.
+
+Primero creamos un nuevo proyecto de **Spring Boot** con las dependencias de JPA y H2
+
+```xml
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+    </dependency>
+```
+
+H2 es necesario porque JPA necesita que haya una base de datos para poder funcionar.
+
+Luego hay que quitar de la clase main la qu está dentro de ella
+
+```java
+package com.dieg0code.commons;
+
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class CommonsApplication {
+
+}
+
+```
+
+También no es necesario que usemos el plugin de maven, arique lo podemos quitar
+
+```xml
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+		</plugins>
+	</build>
+```
+
+Creamos en package **models.entity** y dentro la entidad **Producto**.
+
+```java
+package com.dieg0code.commons.models.entity;
+
+import jakarta.persistence.*;
+
+import java.io.Serializable;
+import java.util.Date;
+
+@Entity
+@Table(name = "productos")
+public class Producto implements Serializable {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    private String nombre;
+    private Double precio;
+
+    @Column(name = "created_at")
+    @Temporal(TemporalType.DATE)
+    private Date createdAt;
+
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public String getNombre() {
+        return nombre;
+    }
+
+    public void setNombre(String nombre) {
+        this.nombre = nombre;
+    }
+
+    public Double getPrecio() {
+        return precio;
+    }
+
+    public void setPrecio(Double precio) {
+        this.precio = precio;
+    }
+
+    public Date getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(Date createdAt) {
+        this.createdAt = createdAt;
+    }
+}
+```
+
+Luego debemos generar el **jar** de la librería para poder usarla en los microservicios.
+
+```cmd
+mvn clean install
+```
+
+Con esto generamos un **jar** en la carpeta **target** que es un paquete con todas las clases y dependencias de la librería, el cual vamos a usar en los microservicios.
+
+También podemos quitar la autoconfiguracion de la base de datos usando la anotación **@EnableAutoConfiguration** en la clase principal.
+
+```java
+@SpringBootApplication
+@EnableAutoConfiguration(exclude = {DataSourceAutoConfiguration.class})
+public class CommonsApplication {
+  
+  }
+}
+```
+
+Ya que no necesitamos una base de datos en este proyecto, pero JPA lo configura por defecto por eso hay que excluirlo.
+
+Ahora para usar la librería en los microservicios debemos agregar la dependencia en el `pom.xml`.
+
+```xml
+    <dependency>
+      <groupId>com.dieg0code</groupId>
+      <artifactId>commons</artifactId>
+      <version>0.0.1-SNAPSHOT</version>
+    </dependency>
+```
+
+Es importante sacar del **pom** de la librería el **groupId**, **artifactId** y **version**.
+
+Luego debemos modificar todas las clases para que usen la entidad **Producto** de la librería.
+
+El problema que tenemos ahora es que el package de Producto está en **commons** el cual es otro proyecto con otro contexto. Para solucionar esto debemos agregar la anotación **@EntityScan** en la clase principal de los microservicios que usan la librería.
+
+```java
+@EntityScan({"com.dieg0code.commons.models.entity"})
+@SpringBootApplication
+public class MicroserviceItemApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(MicroserviceItemApplication.class, args);
+    }
+
+}
+```
+
+Con esto estamos indicando que busque las entidades en el package **com.dieg0code.commons.models.entity**.
+
+De esta forma estamos reutilizando la entidad **Producto** en ambos microservicios. En este ejemplo estamos reutilizando solo una entidad, pero en proyectos grandes se nota mas la utilidad, ya que centralizamos las entidades y todo el código que sea necesario para después solo reutilizarlo y no tener que repetir lo mismo en cada uno de los servicios.
+
+## Spring Cloud Security: OAuth2 y JWT
+
+Una de las formas mas comunes de implementar seguridad en una aplicación es trabajar con sesiones, pero en una arquitectura de microservicios esto no es lo mas recomendable, ya que cada microservicio tendría que tener su propia sesión y esto no es escalable.
+
+La solución a esto es usar **tokens** de seguridad. **JWT** (JSON Web Token) es un estándar abierto que define una forma compacta y autónoma para transmitir información entre las partes como un objeto JSON. Esta información puede ser verificada y es confiable porque está firmada digitalmente.
+
+Un **JWT** consiste en tres partes separadas por un punto:
+
+- **Header**: Contiene el tipo de token y el algoritmo de encriptación.
+- **Payload**: Contiene la información que queremos transmitir.
+- **Signature**: Contiene la firma digital que verifica que el mensaje no ha sido alterado. Para esta firma se usa un **secret** que solo el servidor conoce, una especie de contraseña.
+
+Es una cadena alfanumérica que se puede enviar en la cabecera de una petición HTTP, en el cuerpo de una petición HTTP o en una cookie.
+
+Por ejemplo:
+
+```json
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+```
+
+Los **token** también suelen caducar después de un tiempo, esto es para que si alguien intercepta el **token** no pueda usarlo indefinidamente.
+
+Se suelen almacenar en el cliente, ya sea en el **sessionStorage** o en el **localStorage** del navegador, o en una cookie. Ya que el localStorage es persistente se suele guardar ahí tokens con una duración larga, mientras que en el sessionStorage se guardan tokens con una duración corta.
+
+Si bien los JWT son un método de seguridad, son fácilmente reversibles, es por eso que no se debe guardar información sensible en ellos, como contraseñas, números de tarjeta de crédito, etc.
+
+### Introducción a OAuth2
+
+Spring Security es un framework de seguridad que se integra con Spring Boot, nos provee características de seguridad como autenticación, autorización, protección contra ataques, etc.
+
+La **Autenticación** se refiere al proceso de establecer un principal (un principal significa un usuario, dispositivo o algún otro sistema el cual puede ejecutar alguna acción en nuestro sistema), en general permite a los principal autenticarse en base a cualquier proveedor de seguridad por ejemplo **LDAP**, **Base de datos relacional** y **Autenticación HTTP**.
+
+La **Autorización** se refiere al proceso de decidir si se otorga acceso a un usuario para realizar una acción dentro de la aplicación, es decir, para controlar el acceso a los recursos de la aplicación por medio de la asignación de roles y permisos a grupos de usuario.
+
+**OAuth2** es un protocolo de autorización que permite a las aplicaciones de terceros, una aplicación web o una móvil, autenticarse con cuentas de usuario que están en un servicio HTTP externo, de esta forma se puede compartir un sistema de autenticación entre varias aplicaciones sin compartir la información del usuario.
+
+La implementación que trae **Spring security** de **OAuth2** se compone de dos partes:
+
+- **Authorization Server**: Es el servidor que se encarga de emitir los tokens de acceso a los clientes después de autenticarlos y obtener su consentimiento.
+- **Resource Server**: Es el servidor que protege los recursos, los cuales solo pueden ser accedidos por los clientes que tengan un token de acceso válido. Tras bambalinas, el servidor de recursos aplica el filtro de Spring **OAuth2AuthenticationProcessingFilter** para validar el token de acceso.
+
+El proceso de autenticación con **OAuth2** es el siguiente:
+
+- El cliente realiza una petición POST a una ruta del **Authorization Server**, por ejemplo **/auth/token** con las siguientes características:
+  - header: 
+    - Authorization: Basic base64(client_id:client_secret)
+    - Content-Type: application/x-www-form-urlencoded
+  - body: 
+    - grant_type: password
+    - username: usuario
+    - password: contraseña
+
+- Si todo sale bien el servidor de autorización responde con un **token** de acceso.
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "refresh_token": "eyJbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_in": 3600,
+  "scope": "read write"
+  "jti": "5e9e3b7b-3b7b-4b7b-8b7b-7b7b7b7b7b7b"
+}
+```
+- Luego el cliente puede hace una petición GET al **Resource Server** con la ruta **/api/clientes**, por ejemplo, con las siguientes características:
+  - header:
+    - Authorization: Bearer access_token, en donde access_token es el token de acceso que se obtuvo en el paso anterior.
+- Si el token es valido se otorga el acceso y los permisos para acceder al recurso y retorna por ejemplo:
+
+```json
+[
+  {
+    "id": 1,
+    "nombre": "Diego",
+    "apellido": "Obando",
+    "email": "email@exampl.com"
+  },
+  {
+    "id": 2,
+    "nombre": "Juan",
+    "apellido": "Perez",
+    "email": "email@example.com"
+  }
+]
+```
+
+## Creando el Microservicio de Usuarios
+
+Para todo este tema de seguridad, primero debemos tener usuarios a los que autenticar, para esto vamos a crear un microservicio de usuarios.
+
+Necesitamos las dependencias de **Eureka Client**
+
+```xml
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+    </dependency>
+```
+
+La de **Data JPA** y **H2**.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+    </dependency>
+```
+
+La de **DevTools**.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-devtools</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+```
+
+Y **Spring Web** para poder crear los controladores.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+```
+
+Luego debemos crear las entidades de **Usuario** y **Rol**.
+
+```java
+@Entity
+@Table(name = "usuarios")
+public class Usuario implements Serializable {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(unique = true, length = 20)
+    private String username;
+
+    @Column(length = 60)
+    private String password;
+
+    private Boolean enabled;
+    private String nombre;
+    private String apellido;
+
+    @Column(unique = true, length = 100)
+    private String email;
+
+    @ManyToMany(fetch = FetchType.LAZY)
+    @JoinTable(name = "usuarios_roles", joinColumns = @JoinColumn(name = "usuario_id"),
+            inverseJoinColumns = @JoinColumn(name = "role_id"),
+            uniqueConstraints = {@UniqueConstraint(columnNames = {"usuario_id", "role_id"})})
+    private List<Role> roles;
+
+}
+```
+
+Esta clase tiene una relación **@ManyToMany** con la clase **Role**. Cabe mencionar las anotaciones que usa esta relación:
+
+- **ManyToMany(fetch = FetchType.LAZY)**: Indica que la relación es de muchos a muchos y que se cargará de forma perezosa, es decir que se cargará solo cuando se necesite.
+- **JoinTable**: Indica la tabla intermedia que se va a crear para la relación. Esto es común cuando hay una relación de muchos a muchos.
+- **joinColumns = @JoinColumn(name = "usuario_id")**: Indica el nombre de la columna que va a ser la llave foránea de la tabla **usuarios**.
+- **inverseJoinColumns = @JoinColumn(name = "role_id")**: Indica el nombre de la columna que va a ser la llave foránea de la tabla **roles**.
+- **uniqueConstraints = {@UniqueConstraint(columnNames = {"usuario_id", "role_id"})}**: Indica que la combinación de **usuario_id** y **role_id** debe ser única, esto es para evitar que un usuario tenga el mismo rol dos veces.
+
+Luego tenemos la entidad **Role**.
+
+```java
+@Entity
+@Table(name = "roles")
+public class Role implements Serializable {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(unique = true, length = 20)
+    private String nombre;
+    
+}
+```
+
+En esta tabla no es necesario una relación **@ManyToMany** ya que no se necesita saber que usuarios tienen un rol, solo se necesita saber que roles tiene un usuario.
+
+### Repositorio JPA para usuries
+
+Data JPA nos da la opción de implementar **Querys** en base al nombre de método.
+
+```java
+public interface UsuarioDao extends PagingAndSortingRepository<Usuario, Long>{
+
+    public Usuario findByUsername(String username);
+}
+```
+
+Creamos una interface que extienda de **PagingAndSortingRepository**, la cual nos da métodos para paginar y ordenar los resultados, y le pasamos la entidad **Usuario** y el tipo de dato de la llave primaria.
+
+Luego dentro podemos implementar las consultas que se van a poder ejecutar en la base de datos.
+
+**findByUsername** es equivalente a **SELECT * FROM usuarios WHERE username = ?**.
+
+También tenemos la opción de implementar **Querys** personalizadas.
+
+```java
+public interface UsuarioDao extends PagingAndSortingRepository<Usuario, Long>{
+
+    @Query("select u from Usuario u where u.username = ?1")
+    public Usuario obtenerPorUsername(String username);
+}
+```
+
+### Implementando un repositorio REST para el CRUD
+
+Con la dependencia
+
+```<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-rest</artifactId>
+    <version>3.3.0</version>
+</dependency>
+```
+
+Podemos implementar de forma automática un repositorio REST.
+
+```java
+@RepositoryRestResource(path = "usuarios")
+public interface UsuarioDao extends PagingAndSortingRepository<Usuario, Long>{
+
+    public Usuario findByUsername(String username);
+}
+```
+
+Con la anotación **@RepositoryRestResource** indicamos que vamos a exponer este repositorio como un servicio REST, y con la propiedad **path** indicamos la ruta en la que se va a exponer.
+
+De esta forma automatizamos el CRUD de la entidad **Usuario**, sin la necesidad de crear un controlador.
+
+Para poder exportar nuestros métodos personalizados debemos agregar la anotación **@RestResource**.
+
+```java
+@RepositoryRestResource(path = "usuarios")
+public interface UsuarioDao extends PagingAndSortingRepository<Usuario, Long>{
+
+    @RestResource(path = "buscar-username")
+    public Usuario findByUsername(@Param("username") String username);
+}
+```
+
+Con la anotación **@RestResource** indicamos que vamos a exponer este método como un servicio REST, y con la propiedad **path** indicamos la ruta en la que se va a exponer.
+
+Para acceder a este método debemos hacer una petición **GET** a la ruta **/usuarios/search/buscar-username?username=nombre-usuario**. Siempre debe ir el prefijo **search** antes del nombre del método.
+
+### Configuración para exponer el id en la respuesta JSON
+
+Por defecto **Spring Data REST** no expone el id de las entidades en la respuesta JSON, para exponerlo debemos crear una clase de configuración, por ejemplo **RepositoryConfig.java**
+
+```java
+@Configuration
+public class RepositoryConfig implements RepositoryRestConfigurer {
+
+  @Override
+  public void configureRepositoryRestConfiguration(RepositoryRestConfiguration config) {
+    config.exposeIdsFor(Usuario.class, Role.class);
+  }
+}
+```
+
+### Librería commons para usuarios
+
+Las entidad **Usuario** y **Role** las podemos mover a un proyecto de librería de utilidades, de esta forma podemos reutilizarlas en otros microservicios posteriormente.
+
+Para esto creamos un nuevo proyecto de **Spring Boot** con la dependencia de **Spring Data JPA**.
+
+También hay que excluir la autoconfiguración de la base de datos.
+
+```java
+@SpringBootApplication
+@EnableAutoConfiguration(exclude = {DataSourceAutoConfiguration.class})
+public class CommonsApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(CommonsApplication.class, args);
+    }
+
+}
+```
+
+Creamos un package **models.entity** y dentro la entidad **Usuario**.
+
+```java
+@Entity
+@Table(name = "usuarios")
+public class Usuario implements Serializable {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(unique = true, length = 20)
+    private String username;
+
+    @Column(length = 60)
+    private String password;
+
+    private Boolean enabled;
+    private String nombre;
+    private String apellido;
+
+    @Column(unique = true, length = 100)
+    private String email;
+
+    @ManyToMany(fetch = FetchType.LAZY)
+    @JoinTable(name = "usuarios_roles", joinColumns = @JoinColumn(name = "usuario_id"),
+            inverseJoinColumns = @JoinColumn(name = "role_id"),
+            uniqueConstraints = {@UniqueConstraint(columnNames = {"usuario_id", "role_id"})})
+    private List<Role> roles;
+
+}
+```
+
+Y la entidad **Role**.
+
+```java
+@Entity
+@Table(name = "roles")
+public class Role implements Serializable {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(unique = true, length = 20)
+    private String nombre;
+    
+}
+```
+
+Generamos el **jar** de la librería.
+
+```cmd
+mvn clean install
+```
+
+Y agregamos la dependencia en los microservicios.
+
+```xml
+    <dependency>
+      <groupId>com.dieg0code</groupId>
+      <artifactId>commons</artifactId>
+      <version>0.0.1-SNAPSHOT</version>
+    </dependency>
+```
+
+El **artifactId** puede variar dependiendo del nombre que le hayamos dado al proyecto de la librería.
+
+### Modificación del microservicio de usuarios para usar la librería
+
+En el microservicio de usuarios debemos modificar la clase principal para que escanee las entidades de la librería.
+
+```java
+@EntityScan({"com.dieg0code.commons.models.entity"})
+@SpringBootApplication
+public class MicroserviceUsersApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(MicroserviceUsersApplication.class, args);
+    }
+
+}
+```
+
+Y también reemplazar las entidades por las de la librería.
+
+### Creación del microservicio OAuth (Authorization Server)
+
+El servidor de autorización es el que se encarga de generar los tokens de acceso, para esto necesitamos las dependencias de **Spring Security OAuth2**.
+
+Necesitamos la dependencia de **Eureka Client**.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+    </dependency>
+```
+
+Spring Web para crear los controladores.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+```
+
+DevTools para reiniciar el servidor automáticamente.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-devtools</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+```
+
+OpenFeign para comunicarnos con el microservicio de usuarios.
+
+```xml
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-openfeign</artifactId>
+    </dependency>
+```
+
+También la dependencia de **Oauth**
+
+```xml
+<dependency>
+    <groupId>org.springframework.security.oauth</groupId>
+    <artifactId>spring-security-oauth2</artifactId>
+    <version>2.3.8.RELEASE</version>
+</dependency>
+```
+
+La de **JWT**
+
+```xml
+<dependency>
+    <groupId>org.springframework.security</groupId>
+    <artifactId>spring-security-jwt</artifactId>
+    <version>1.1.1.RELEASE</version>
+</dependency>
+```
+
+Y la de **jaxb**
+  
+```xml
+<dependency>
+    <groupId>org.glassfish.jaxb</groupId>
+    <artifactId>jaxb-runtime</artifactId>
+</dependency>
+```
+
+Ademas de la librería de **commons**.
+
+```xml
+    <dependency>
+      <groupId>com.dieg0code</groupId>
+      <artifactId>commons</artifactId>
+      <version>0.0.1-SNAPSHOT</version>
+    </dependency>
+```
+
+La librería commons incluye la dependencia de **Spring Data JPA**, pero nuestro microservicio de OAuth no necesita una base de datos, por lo que debemos excluir la autoconfiguración de la base de datos. Podemos hacer esto también directamente en el pom.xml.
+
+```xml
+<dependency>
+    <groupId>com.dieg0code</groupId>
+    <artifactId>commons</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <exclusions>
+        <exclusion>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </exclusion>
+    </exclusions>
+</dependency>
+```
+
+Configuramos el servidor de autorización en el archivo **application.properties**.
+
+```properties
+spring.application.name=microservice-oauth
+server.port=9100
+
+eureka.client.service-url.default-zone=http://localhost:8761/eureka
+
+spring.config.import=optional:configserver:http://localhost:8888
+```
+
+### Interfaz Feign Client
+
+Con **Feign** podemos comunicarnos con otros microservicios de forma sencilla, solo debemos crear una interfaz con los métodos que vamos a usar y **Feign** se encarga de hacer la comunicación.
+
+Comenzamos agrando la anotación **@EnableFeignClients** en la clase principal.
+
+```java
+@EnableFeignClients
+@SpringBootApplication
+public class MicroserviceOauthApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(MicroserviceOauthApplication.class, args);
+    }
+
+}
+```
+
+Creamos el package **clients** y dentro la interfaz **UsuarioFeignClient**.
+
+```java
+@FeignClient(name = "microservice-usuarios")
+public interface UsuarioFeignClient {
+
+    @GetMapping("/usuarios/search/buscar-username")
+    public Usuario findByUsername(@RequestParam String username);
+
+}
+```
+
+En la anotación **@FeignClient** indicamos el nombre del microservicio con el que nos vamos a comunicar.
+
+Luego en **@GetMapping** indicamos la ruta del microservicio al que vamos a hacer la petición.
+
+Luego creamos la clase service que va a implementar la interfaz.
+
+Comenzamos creando un nuevo package **services** y dentro la clase **UsuarioService**.
+
+```java
+@Service
+public class UsuarioService implements UserDetailsService {
+
+    @Autowired
+    private UsuarioFeignClient client;
+
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        Usuario usuario = client.findByUsername(username);
+
+        if (usuario == null) {
+            throw new UsernameNotFoundException("Error en el login, no existe el usuario '" + username + "' en el sistema");
+        }
+
+        List<GrantedAuthority> authorities = usuario.getRoles()
+                .stream()
+                .map(role -> new SimpleGrantedAuthority(role.getNombre()))
+                .peek(authority -> log.info("Role: " + authority.getAuthority()))
+                .collect(Collectors.toList());
+
+        log.info("Usuario autenticado: " + username);
+
+        return new User(usuario.getUsername(), usuario.getPassword(), usuario.getEnabled(), true, true, true, authorities);
+    }
+}
+```
+
+Con la anotación **@Service** indicamos que esta clase es un servicio.
+
+Con la interfaz **UserDetailsService** de **Spring Security** podemos cargar un usuario por su nombre de usuario, en este caso vamos a cargar un usuario por su nombre de usuario y vamos a devolver un **UserDetails**.
+
+Con la anotación **@Autowired** inyectamos el cliente **Feign**.
+
+En el método **loadUserByUsername** hacemos una petición al microservicio de usuarios para obtener el usuario por su nombre de usuario.
+
+Si el usuario no existe lanzamos una excepción **UsernameNotFoundException**.
+
+Luego obtenemos los roles del usuario y los convertimos en **GrantedAuthority**.
+
+Con el método **stream** convertimos la lista de roles en un **Stream**.
+
+Con el método **map** convertimos cada rol en un **SimpleGrantedAuthority**.
+
+Con el método **peek** imprimimos los roles.
+
+Con el método **collect** convertimos el **Stream** en una lista de **GrantedAuthority**.
+
+Luego imprimimos el nombre del usuario autenticado.
+
+Y finalmente retornamos un **User** con el nombre de usuario, la contraseña, si el usuario está habilitado, si la cuenta no ha expirado, si las credenciales no han expirado, si la cuenta no está bloqueada, los roles del usuario.
+
+### Añadiendo la clase SpringSecurityConfig y registrando UserDetailsService
+
+Debemos registrar en el authenticationManager el servicio que acabamos de crear.
+
+Comenzamos creando un nuevo package **security** y dentro la clase **SpringSecurityConfig**.
+
+```java
+@Configuration
+public class SpringSecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Autowired
+    private UserDetailsService usuarioService;
+
+    @Override
+    @Autowired
+    protected void configure(AuthenticationManagerBuilder auth) throws Exception {
+        auth.userDetailsService(usuarioService).passwordEncoder(passwordEncoder());
+    }
+
+    @Bean
+    public static BCryptPasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Override
+    @Bean
+    protected AuthenticationManager authenticationManager() throws Exception {
+        return super.authenticationManager();
+    }
+}
+```
+
+Con la anotación **@Configuration** indicamos que esta clase es una clase de configuración.
+
+Luego inyectamos el servicio **UserDetailsService** mediante la anotación **@Autowired**.
+
+Inyectamos también el **AuthenticationManagerBuilder** en el método **configure**, este método nos permite configurar el **AuthenticationManager** y es heredado de **WebSecurityConfigurerAdapter**.
+
+Con el método **userDetailsService** indicamos que vamos a usar el servicio **UserDetailsService** que acabamos de crear y con **passwordEncoder** indicamos que vamos a usar un **BCryptPasswordEncoder** para encriptar las contraseñas.
+
+Con el método **passwordEncoder** creamos un **BCryptPasswordEncoder** el cual es un **PasswordEncoder** que usa el algoritmo **BCrypt** para encriptar las contraseñas.
+
+Con el método **authenticationManager** indicamos que vamos a usar el **AuthenticationManager**, este método es necesario para poder usar el **AuthenticationManager** en la autenticación. 
+
+### Configuración del servidor de autorización
+
+En el package **security** creamos la clase **AuthorizationServerConfig**.
+
+```java
+@Configuration
+@EnableAuthorizationServer
+public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdapter {
+
+    @Autowired
+    private BCryptPasswordEncoder passwordEncoder;
+
+    @Autowired
+    private AuthenticationManager authenticationManager;
+
+    @Autowired
+    private UsuarioService usuarioService;
+
+    @Override
+    public void configure(AuthorizationServerSecurityConfigurer security) throws Exception {
+        security.tokenKeyAccess("permitAll()")
+                .checkTokenAccess("isAuthenticated()");
+    }
+
+    @Override
+    public void configure(ClientDetailsServiceConfigurer clients) throws Exception {
+        clients.inMemory().withClient("frontendapp")
+                .secret(passwordEncoder.encode("12345"))
+                .scopes("read", "write")
+                .authorizedGrantTypes("password", "refresh_token")
+                .accessTokenValiditySeconds(3600)
+                .refreshTokenValiditySeconds(3600);
+    }
+
+    @Override
+    public void configure(AuthorizationServerEndpointsConfigurer endpoints) throws Exception {
+        endpoints.authenticationManager(authenticationManager)
+                .tokenStore(tokenStore())
+                .accessTokenConverter(accessTokenConverter())
+    }
+
+    @Bean
+    public JwtAccessTokenConverter accessTokenConverter() {
+        JwtAccessTokenConverter tokenConverter = new JwtAccessTokenConverter();
+        tokenConverter.setSigningKey("algun_codigo_secreto_aqui");
+        return tokenConverter;
+    }
+
+    @Bean
+    public TokenStore tokenStore() {
+        return new JwtTokenStore(accessTokenConverter());
+    }
+}
+```
+
+#### Anotaciones
+- **@Configuration**: Indica que esta clase define beans de configuración para Spring.
+- **@EnableAuthorizationServer**: Marca esta clase como una configuración para un servidor de autorización OAuth2.
+
+#### Inyecciones de Dependencias
+- **BCryptPasswordEncoder**: Bean para codificar contraseñas usando BCrypt.
+- **AuthenticationManager**: Bean para manejar la autenticación.
+- **UsuarioService**: Servicio personalizado para gestionar los usuarios (no utilizado directamente en el código).
+
+#### Métodos de Configuración
+
+1. **configure(AuthorizationServerSecurityConfigurer security)**:
+   - **security.tokenKeyAccess("permitAll()")**: Permite el acceso público a la ruta `/oauth/token_key`.
+   - **security.checkTokenAccess("isAuthenticated()")**: Restringe el acceso a la ruta `/oauth/check_token` solo a usuarios autenticados.
+
+2. **configure(ClientDetailsServiceConfigurer clients)**:
+   - **clients.inMemory()**: Define que los detalles del cliente se almacenan en memoria.
+   - **withClient("frontendapp")**: Configura el ID del cliente como "frontendapp".
+   - **secret(passwordEncoder.encode("12345"))**: Codifica y establece la contraseña del cliente.
+   - **scopes("read", "write")**: Define los alcances (permisos) que el cliente puede solicitar.
+   - **authorizedGrantTypes("password", "refresh_token")**: Define los tipos de concesión permitidos (en este caso, `password` y `refresh_token`).
+   - **accessTokenValiditySeconds(3600)**: Establece la validez del token de acceso en 3600 segundos (1 hora).
+   - **refreshTokenValiditySeconds(3600)**: Establece la validez del token de refresco en 3600 segundos (1 hora).
+
+3. **configure(AuthorizationServerEndpointsConfigurer endpoints)**:
+   - **endpoints.authenticationManager(authenticationManager)**: Configura el `AuthenticationManager` para manejar la autenticación.
+   - **endpoints.tokenStore(tokenStore())**: Configura el almacén de tokens (`TokenStore`).
+   - **endpoints.accessTokenConverter(accessTokenConverter())**: Configura el convertidor de tokens (`AccessTokenConverter`).
+
+#### Beans
+
+1. **JwtAccessTokenConverter accessTokenConverter()**:
+   - Crea y configura un `JwtAccessTokenConverter`, que se encarga de convertir un `AccessToken` en un `JWT`.
+   - **tokenConverter.setSigningKey("algun_codigo_secreto_aqui")**: Establece la clave secreta para firmar los tokens JWT.
+
+2. **TokenStore tokenStore()**:
+   - Crea y configura un `JwtTokenStore` que utiliza el `JwtAccessTokenConverter` para almacenar los tokens JWT.
+
+### Añadir información adicional al token JWT
+
+Para añadir información adicional al token JWT debemos crear una clase que implemente una interfaz de **TokenEnhancer**, un **TokenEnhancer** es, en otras palabras, un potenciador, es decir, un objeto que puede agregar información adicional a un token, esta información extra tambien se conoce como **claims**.
+
+Creamos dentro del package **security** la clase **InfoAdicionalToken**.
+
+```java
+@Component
+public class InfoAdicionalToken implements TokenEnhancer {
+
+    @Autowired
+    private UsuarioService usuarioService;
+
+    @Override
+    public OAuth2AccessToken enhance(OAuth2AccessToken accessToken, OAuth2Authentication authentication) {
+        Usuario usuario = usuarioService.findByUsername(authentication.getName());
+        Map<String, Object> info = new HashMap<>();
+        info.put("info_adicional", "Hola que tal! ".concat(authentication.getName()));
+        info.put("nombre", usuario.getNombre());
+        info.put("apellido", usuario.getApellido());
+        info.put("email", usuario.getEmail());
+        ((DefaultOAuth2AccessToken) accessToken).setAdditionalInformation(info);
+        return accessToken;
+    }
+}
+```
+
+Necesitamos agregar esta interfaz al **UsuarioService**, para esto creamos en el package **services** la interfaz **IUsuarioService**.
+
+```java
+public interface IUsuarioService {
+
+    public Usuario findByUsername(String username);
+
+}
+```
+
+Y la implementamos en el **UsuarioService**.
+
+```java
+@Service
+public class UsuarioService implements UserDetailsService, IUsuarioService {
+
+    @Autowired
+    private UsuarioFeignClient client;
+
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        Usuario usuario = client.findByUsername(username);
+
+        if (usuario == null) {
+            throw new UsernameNotFoundException("Error en el login, no existe el usuario '" + username + "' en el sistema");
+        }
+
+        List<GrantedAuthority> authorities = usuario.getRoles()
+                .stream()
+                .map(role -> new SimpleGrantedAuthority(role.getNombre()))
+                .peek(authority -> log.info("Role: " + authority.getAuthority()))
+                .collect(Collectors.toList());
+
+        log.info("Usuario autenticado: " + username);
+
+        return new User(usuario.getUsername(), usuario.getPassword(), usuario.getEnabled(), true, true, true, authorities);
+    }
+
+    @Override
+    public Usuario findByUsername(String username) {
+        return client.findByUsername(username);
+    }
+}
+```
+
+Esto es para poder inyectar el servicio en la clase **InfoAdicionalToken**.
+
+```java
+((DefaultOAuth2AccessToken) accessToken).setAdditionalInformation(info);
+```
+
+Este método esta entre paréntesis porque **accessToken** es de tipo **OAuth2AccessToken** y no tiene el método **setAdditionalInformation**, por eso lo casteamos a **DefaultOAuth2AccessToken**, es un cast, por eso va entre paréntesis.
+
+Luego tenemos que configurar el **InfoAdicionalToken** en la clase **AuthorizationServerConfig**, especificamente el método de configuración **configure(AuthorizationServerEndpointsConfigurer endpoints)**.
+
+```java
+@Autowired
+private InfoAdicionalToken infoAdicionalToken;
+
+@Override
+public void configure(AuthorizationServerEndpointsConfigurer endpoints) throws Exception {
+  TokenEnhancerChain tokenEnhancerChain = new TokenEnhancerChain();
+  tokenEnhancerChain.setTokenEnhancers(Arrays.asList(infoAdicionalToken, accessTokenConverter()));
+
+  endpoints.authenticationManager(authenticationManager)
+          .tokenStore(tokenStore())
+          .accessTokenConverter(accessTokenConverter())
+          .tokenEnhancer(tokenEnhancerChain);
+}
+```
+
+### Configurando Zuul como servidor de recursos
+
+Debemos agregar las dependencias, spring security oauth2, jwt y jaxb al microservicio de zuul.
+
+```xml
+<dependency>
+    <groupId>org.springframework.security.oauth</groupId>
+    <artifactId>spring-security-oauth2</artifactId>
+    <version>2.3.8.RELEASE</version>
+</dependency>
+<dependency>
+    <groupId>org.springframework.security</groupId>
+    <artifactId>spring-security-jwt</artifactId>
+    <version>1.1.1.RELEASE</version>
+</dependency>
+<dependency>
+    <groupId>org.glassfish.jaxb</groupId>
+    <artifactId>jaxb-runtime</artifactId>
+</dependency>
+```
+
+Creamos un nuevo package **oauth** y dentro la clase **ResourceServerConfig**.
+
+```java
+@Configuration
+@EnableResourceServer
+public class ResourceServerConfig extends ResourceServerConfigurerAdapter {
+
+
+    @Override
+    public void configure(ResourceServerSecurityConfigurer resources) throws Exception {
+        resources.tokenStore(tokenStore());
+    }
+
+    @Override
+    public void configure(HttpSecurity http) throws Exception {
+      http.authorizeRequests().antMatchers("/api/security/oauth/**").permitAll()
+              .antMatchers(HttpMethod.GET, "/api/productos/listar", "/api/items/listar", "/api/usuarios/usuarios").permitAll()
+              .antMatchers(HttpMethod.GET, "/api/productos/ver/{id}", "/api/items/ver/{id}/cantidad/{cantidad}", "/api/usuarios/usuarios/{id}").hasAnyRole("ADMIN", "USER")
+              .antMatchers("/api/productos/**", "/api/items/**", "/api/usuarios/**").hasRole("ADMIN")
+              .anyRequest().authenticated();
+    }
+
+    @Bean
+    public JwtAccessTokenConverter accessTokenConverter() {
+      JwtAccessTokenConverter tokenConverter = new JwtAccessTokenConverter();
+      tokenConverter.setSigningKey("algun_codigo_secreto_aqui");
+      return tokenConverter;
+    }
+
+    @Bean
+    public TokenStore tokenStore() {
+      return new JwtTokenStore(accessTokenConverter());
+    }
+}
+```
+
+El token tiene que tener la misma configuración que el servidor de autorización, por eso debemos tener la misma clave secreta.
+
+Este método:
+
+```java
+    @Override
+    public void configure(HttpSecurity http) throws Exception {
+      http.authorizeRequests().antMatchers("/api/security/oauth/**").permitAll()
+              .antMatchers(HttpMethod.GET, "/api/productos/listar", "/api/items/listar", "/api/usuarios/usuarios").permitAll()
+              .antMatchers(HttpMethod.GET, "/api/productos/ver/{id}", "/api/items/ver/{id}/cantidad/{cantidad}", "/api/usuarios/usuarios/{id}").hasAnyRole("ADMIN", "USER")
+              .antMatchers(HttpMethod.POST, "/api/productos/create", "/api/items/create", "/api/usuarios/create").hasRole("ADMIN")
+              .antMatchers(HttpMethod.PUT, "/api/productos/edit/{id}", "/api/items/edit/{id}", "/api/usuarios/edit/{id}").hasRole("ADMIN")
+              .antMatchers(HttpMethod.DELETE, "/api/productos/delete/{id}", "/api/items/delete/{id}", "/api/usuarios/delete/{id}").hasRole("ADMIN")
+              .anyRequest().authenticated();
+    }
+```
+
+Con **.antMatchers()** podemos estableces las rutas, metodos y roles que pueden acceder a estos endpoints.
+
+Establece las reglas de seguridad, en este caso estamos permitiendo el acceso a las rutas **/api/security/oauth/**, **/api/productos/listar**, **/api/items/listar** y **/api/usuarios/usuarios** a todos los usuarios.
+
+Estamos permitiendo el acceso a las rutas **/api/productos/ver/{id}**, **/api/items/ver/{id}/cantidad/{cantidad}** y **/api/usuarios/usuarios/{id}** a los usuarios con los roles **ADMIN** y **USER**.
+
+Y estamos permitiendo  que solo los usuarios con rol **ADMIN** puedan hacer peticiones **POST** a las rutas **/api/productos/**, **/api/items/** y **/api/usuarios/**, para que solo ellos puedan crear productos, items y usuarios.
+
+esto tambien puede ser simplificado con:
+
+```java
+    @Override
+    public void configure(HttpSecurity http) throws Exception {
+      http.authorizeRequests().antMatchers("/api/security/oauth/**").permitAll()
+              .antMatchers(HttpMethod.GET, "/api/productos/listar", "/api/items/listar", "/api/usuarios/usuarios").permitAll()
+              .antMatchers(HttpMethod.GET, "/api/productos/ver/{id}", "/api/items/ver/{id}/cantidad/{cantidad}", "/api/usuarios/usuarios/{id}").hasAnyRole("ADMIN", "USER")
+              .antMatchers("/api/productos/**", "/api/items/**", "/api/usuarios/**").hasRole("ADMIN")
+              .anyRequest().authenticated();
+    }
+```
+
+### Configuraciónd de OAuth en el Servidor de configuración
+
+Podemos centralizar algunas configuraciones en el servidor de configuración como el client id, client secret, etc. De esta manera desacopalmos un poco las configuraciones del código del servicio de OAuth.
+
+Creamos un nuevo archivo en la carpeta de configuración **application.properties**.
+
+```properties
+config.security.oauth.client.id=frontendapp
+config.security.oauth.client.secret=12345
+config.security.oauth.jwt.key=algun_codigo_secreto_aqui
+```
+
+En el microservicio de OAuth agreagamos la dependencia de **Spring Cloud Config Client**.
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-config</artifactId>
+</dependency>
+```
+
+Esta dependencia también hay que agregarla en el microservicio de zuul.
+
+Todos los clientes del servidor de configuración deben tener el archivo **bootstrap.properties**, por lo que debemos agregarlo en el microservicio de OAuth.
+
+```properties
+spring.application.name=microservice-oauth
+spring.cloud.config.uri=http://localhost:8888
+management.endpoints.web.exposure.include=*
+```
+
+Tambien hay que agregar esto a Zuul.
+
+```properties
+spring.application.name=microservice-zuul-server
+spring.cloud.config.uri=http://localhost:8888
+management.endpoints.web.exposure.include=*
+```
+
+El siguiente paso es inyectar esta configuraciones en las clases de configuración.
+
+Por ejemplo en el servidor de autorización, en el archivo **AuthorizationServerConfig.java**.
+
+```java
+@Autowire
+private Environment env;
+
+@Override
+public void configure(ClientDetailsServiceConfigurer clients) throws Exception {
+    clients.inMemory().withClient(env.getProperty("config.security.oauth.client.id"))
+            .secret(passwordEncoder.encode(env.getProperty("config.security.oauth.client.secret")))
+            .scopes("read", "write")
+            .authorizedGrantTypes("password", "refresh_token")
+            .accessTokenValiditySeconds(3600)
+            .refreshTokenValiditySeconds(3600);
+}
+
+@Bean
+public JwtAccessTokenConverter accessTokenConverter() {
+    JwtAccessTokenConverter tokenConverter = new JwtAccessTokenConverter();
+    tokenConverter.setSigningKey(env.getProperty("config.security.oauth.jwt.key"));
+    return tokenConverter;
+}
+```
+
+En el archivo **ResourceServerConfig.java** del microservicio de zuul.
+
+```java
+@Value("${config.security.oauth.jwt.key}")
+private String jwtKey;
+
+@Bean
+public JwtAccessTokenConverter accessTokenConverter() {
+    JwtAccessTokenConverter tokenConverter = new JwtAccessTokenConverter();
+    tokenConverter.setSigningKey(jwtKey);
+    return tokenConverter;
+}
+```
+
+También, si queremos que el microservicio actualize automaticamente las configuraciones, debemos agregar la anotación **@RefreshScope** en el archivo de configuración.
+
+```java
+@RefreshScope
+@Configuration
+public class ResourceServerConfig extends ResourceServerConfigurerAdapter {}
+```
+
+Lo mismo en el microservicio de OAuth.
+
+```java
+@RefreshScope
+@Configuration
+public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdapter {}
+```
+
+### Token de refresco
+
+Un token de refresco es un token que se puede usar para obtener un nuevo token de acceso, esto es útil cuando el token de acceso ha expirado y no queremos que el usuario tenga que volver a ingresar sus credenciales.
+
+Para obtener uno de estos tokens debemos hacer una petición **POST** a la ruta **/oauth/token** con los siguientes parámetros:
+
+- **grant_type**: refresh_token
+- **refresh_token**: token de refresco
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "refresh_token": "eyJbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_in": 3599,
+  "scope": "read write"
+}
+```
+
+Enviamos el token de refresco y el servidor nos devuelve un nuevo token de acceso y un nuevo token de refresco.
+
+### Configuración de CORS en el servidor de autorización
+
+**CORS** (Cross-Origin Resource Sharing) es un mecanismo que permite que los recursos de un servidor web sean solicitados desde otro dominio fuera del dominio desde el que se sirvió el recurso, es decir, permite que un servidor comparta recursos con otros servidores externos. Por ejemplo un fronted creado en otro dominio, en otro servidor.
+
+En el servidor Zuul, en eL package **oauth**, en el archivo **ResourceServerConfig.java** configuramos el CORS en el metodo **configure(HttpSecurity http)**.
+
+```java
+@Override
+public void configure(HttpSecurity http) throws Exception {
+    http.authorizeRequests().antMatchers("/api/security/oauth/**").permitAll()
+            .antMatchers(HttpMethod.GET, "/api/productos/listar", "/api/items/listar", "/api/usuarios/usuarios").permitAll()
+            .antMatchers(HttpMethod.GET, "/api/productos/ver/{id}", "/api/items/ver/{id}/cantidad/{cantidad}", "/api/usuarios/usuarios/{id}").hasAnyRole("ADMIN", "USER")
+            .antMatchers("/api/productos/**", "/api/items/**", "/api/usuarios/**").hasRole("ADMIN")
+            .anyRequest().authenticated()
+            .and().cors().configurationSource(corsConfigurationSource());
+}
+
+@Bean
+public CorsConfigurationSource corsConfigurationSource() {
+    CorsConfiguration corsConfig = new CorsConfiguration();
+    corsConfig.setAllowedOrigins(Arrays.asList("*"));
+    corsConfig.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+    corsConfig.setAllowCredentials(true);
+    corsConfig.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type"));
+
+    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+    source.registerCorsConfiguration("/**", corsConfig);
+
+    return source;
+}
+```
+
+Con **.cors().configurationSource(corsConfigurationSource())** habilitamos el CORS y le pasamos la configuración que queremos. En este caso permitimos que cualquier origen pueda acceder a los recursos, permitimos los métodos **GET**, **POST**, **PUT**, **DELETE** y **OPTIONS**, permitimos las credenciales y permitimos los headers **Authorization** y **Content-Type** para que se puedan autenticar y enviar datos en formato JSON.
+
+**source.registerCorsConfiguration("/**", corsConfig)** le decimos que esta configuración es para todas las rutas.
+
+Tambien podemos configurar un filtro global para el CORS en el microservicio de OAuth.
+
+```java
+@Bean
+public FilterRegistrationBean<CorsFilter> corsFilter() {
+    FilterRegistrationBean<CorsFilter> bean = new FilterRegistrationBean<>(new CorsFilter(corsConfigurationSource()));
+    bean.setOrder(Ordered.HIGHEST_PRECEDENCE);
+    return bean;
+}
+```
+
+Con esto estamos creando un filtro global para el CORS, le pasamos la configuración que creamos anteriormente y le indicamos que este filtro tiene la mayor prioridad.
+
+### Manejo de eventos de éxito y fracaso en la autenticación
+
+Podemos implementar lógica que maneje los casos de éxito y fracaso en la autenticación, por ejemplo, podemos bloquear un usuario si falla en la autenticación 3 veces.
+
+En el servicio oauth en el package **security.events** creamos la clase **AuthenticationSuccessErrorHandler**.
+
+```java
+@Component
+public class AuthenticationSuccessErrorHandler implements AuthenticationEventPublisher {
+
+    @Autowired
+    private IUsuarioService usuarioService;
+
+    @Override
+    public void publishAuthenticationSuccess(Authentication authentication) {
+        UserDetails userDetails = (UserDetails) authentication.getPrincipal();
+        System.out.println("Success Login: " + userDetails.getUsername());
+        Usuario usuario = usuarioService.findByUsername(authentication.getName());
+        if (usuario.getIntentos() != null && usuario.getIntentos() > 0) {
+            usuario.setIntentos(0);
+            usuarioService.update(usuario, usuario.getId());
+        }
+    }
+
+    @Override
+    public void publishAuthenticationFailure(AuthenticationException exception, Authentication authentication) {
+        System.out.println("Error en el login: " + exception.getMessage());
+        try {
+            Usuario usuario = usuarioService.findByUsername(authentication.getName());
+            if (usuario.getIntentos() == null) {
+                usuario.setIntentos(0);
+            }
+            usuario.setIntentos(usuario.getIntentos() + 1);
+            if (usuario.getIntentos() >= 3) {
+                usuario.setEnabled(false);
+            }
+            usuarioService.update(usuario, usuario.getId());
+        } catch (FeignException e) {
+            System.out.println("El usuario no existe en el sistema");
+        }
+    }
+}
+```
+
+Luego hay que registrar este Handler en la clase de configuración de Spring Security.
+
+```java
+@Autowired
+private AuthenticationSuccessErrorHandler successErrorHandler;
+
+@Override
+@Bean
+public AuthenticationManager authenticationManagerBean() throws Exception {
+    return super.authenticationManagerBean();
+}
+
+@Override
+protected void configure(AuthenticationManagerBuilder auth) throws Exception {
+    auth.userDetailsService(usuarioService).passwordEncoder(passwordEncoder);
+}
+
+@Override
+protected void configure(HttpSecurity http) throws Exception {
+    http.authorizeRequests().antMatchers("/api/security/oauth/**").permitAll()
+            .antMatchers(HttpMethod.GET, "/api/productos/listar", "/api/items/listar", "/api/usuarios/usuarios").permitAll()
+            .antMatchers(HttpMethod.GET, "/api/productos/ver/{id}", "/api/items/ver/{id}/cantidad/{cantidad}", "/api/usuarios/usuarios/{id}").hasAnyRole("ADMIN", "USER")
+            .antMatchers("/api/productos/**", "/api/items/**", "/api/usuarios/**").hasRole("ADMIN")
+            .anyRequest().authenticated()
+            .and().cors().configurationSource(corsConfigurationSource())
+            .and().csrf().disable()
+            .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS);
+    http.addFilterBefore(jwtTokenFilter(), UsernamePasswordAuthenticationFilter.class);
+    http.exceptionHandling().accessDeniedHandler(accessDeniedHandler());
+    http.authenticationProvider(daoAuthenticationProvider());
+    http.authenticationEventPublisher(authenticationEventPublisher());
+}
+
+@Bean
+public DaoAuthenticationProvider daoAuthenticationProvider() {
+    DaoAuthenticationProvider daoAuthenticationProvider = new DaoAuthenticationProvider();
+    daoAuthenticationProvider.setPasswordEncoder(passwordEncoder);
+    daoAuthenticationProvider.setUserDetailsService(usuarioService);
+    return daoAuthenticationProvider;
+}
+
+@Bean
+public AuthenticationEventPublisher authenticationEventPublisher() {
+    return new DefaultAuthenticationEventPublisher(successErrorHandler);
+}
+```
+
+### `@Autowired`
+```java
+@Autowired
+private AuthenticationSuccessErrorHandler successErrorHandler;
+```
+- **@Autowired**: Es una anotación de Spring que permite la inyección automática de dependencias. En este caso, está inyectando una instancia de `AuthenticationSuccessErrorHandler` en la variable `successErrorHandler`.
+
+### `authenticationManagerBean` Método
+```java
+@Override
+@Bean
+public AuthenticationManager authenticationManagerBean() throws Exception {
+    return super.authenticationManagerBean();
+}
+```
+- **@Bean**: Indica que este método produce un bean que debe ser gestionado por el contenedor de Spring.
+- **authenticationManagerBean**: Está sobrescribiendo un método para proporcionar una instancia de `AuthenticationManager`. Esto es necesario para habilitar la autenticación personalizada en tu aplicación.
+
+### `configure(AuthenticationManagerBuilder auth)` Método
+```java
+@Override
+protected void configure(AuthenticationManagerBuilder auth) throws Exception {
+    auth.userDetailsService(usuarioService).passwordEncoder(passwordEncoder);
+}
+```
+- **configure(AuthenticationManagerBuilder auth)**: Este método se utiliza para configurar la forma en que los usuarios son autenticados. 
+  - **userDetailsService(usuarioService)**: Indica que el servicio `usuarioService` (que implementa `UserDetailsService`) se utilizará para cargar los detalles del usuario.
+  - **passwordEncoder(passwordEncoder)**: Especifica el codificador de contraseñas a utilizar (probablemente una implementación de `PasswordEncoder`).
+
+### `configure(HttpSecurity http)` Método
+```java
+@Override
+protected void configure(HttpSecurity http) throws Exception {
+    http.authorizeRequests().antMatchers("/api/security/oauth/**").permitAll()
+            .antMatchers(HttpMethod.GET, "/api/productos/listar", "/api/items/listar", "/api/usuarios/usuarios").permitAll()
+            .antMatchers(HttpMethod.GET, "/api/productos/ver/{id}", "/api/items/ver/{id}/cantidad/{cantidad}", "/api/usuarios/usuarios/{id}").hasAnyRole("ADMIN", "USER")
+            .antMatchers("/api/productos/**", "/api/items/**", "/api/usuarios/**").hasRole("ADMIN")
+            .anyRequest().authenticated()
+            .and().cors().configurationSource(corsConfigurationSource())
+            .and().csrf().disable()
+            .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS);
+    http.addFilterBefore(jwtTokenFilter(), UsernamePasswordAuthenticationFilter.class);
+    http.exceptionHandling().accessDeniedHandler(accessDeniedHandler());
+    http.authenticationProvider(daoAuthenticationProvider());
+    http.authenticationEventPublisher(authenticationEventPublisher());
+}
+```
+- **authorizeRequests()**: Define las reglas de autorización para las solicitudes HTTP.
+  - **antMatchers()**: Define patrones de URL y los permisos asociados.
+    - **permitAll()**: Permite el acceso sin autenticación.
+    - **hasAnyRole("ADMIN", "USER")**: Permite el acceso a usuarios con los roles "ADMIN" o "USER".
+    - **hasRole("ADMIN")**: Permite el acceso solo a usuarios con el rol "ADMIN".
+  - **anyRequest().authenticated()**: Requiere autenticación para cualquier otra solicitud.
+- **cors()**: Configura CORS (Cross-Origin Resource Sharing).
+- **csrf().disable()**: Deshabilita la protección CSRF (Cross-Site Request Forgery).
+- **sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)**: Configura la gestión de sesiones para ser sin estado, es decir, no se guardará la sesión del usuario en el servidor.
+- **addFilterBefore(jwtTokenFilter(), UsernamePasswordAuthenticationFilter.class)**: Añade un filtro antes de `UsernamePasswordAuthenticationFilter` para manejar la autenticación JWT.
+- **exceptionHandling().accessDeniedHandler(accessDeniedHandler())**: Configura un manejador para denegaciones de acceso.
+- **authenticationProvider(daoAuthenticationProvider())**: Especifica el proveedor de autenticación.
+- **authenticationEventPublisher(authenticationEventPublisher())**: Especifica el publicador de eventos de autenticación.
+
+### `daoAuthenticationProvider` Método
+```java
+@Bean
+public DaoAuthenticationProvider daoAuthenticationProvider() {
+    DaoAuthenticationProvider daoAuthenticationProvider = new DaoAuthenticationProvider();
+    daoAuthenticationProvider.setPasswordEncoder(passwordEncoder);
+    daoAuthenticationProvider.setUserDetailsService(usuarioService);
+    return daoAuthenticationProvider;
+}
+```
+- **daoAuthenticationProvider()**: Crea y configura un `DaoAuthenticationProvider`, que es un proveedor de autenticación basado en un servicio de detalles del usuario (UserDetailsService) y un codificador de contraseñas (PasswordEncoder).
+
+### `authenticationEventPublisher` Método
+```java
+@Bean
+public AuthenticationEventPublisher authenticationEventPublisher() {
+    return new DefaultAuthenticationEventPublisher(successErrorHandler);
+}
+```
+- **authenticationEventPublisher()**: Crea un publicador de eventos de autenticación (`AuthenticationEventPublisher`) que utilizará `successErrorHandler` para manejar eventos de éxito y error en la autenticación.
+
+Este conjunto de configuraciones asegura que tu aplicación maneje la autenticación y autorización de manera personalizada, gestionando tanto la seguridad de los endpoints como los eventos relacionados con la autenticación.
+
+### Manejo de error 404 en componente de servicio de usuarios
+
+Si el usuario no existe en el sistema, el servicio de usuarios devuelve un error 404, para manejar este error debemos capturarlo en el servicio de OAuth.
+
+En el servicio de OAuth, en el package **services** creamos la clase **UsuarioService**.
+
+```java
+@Service
+public class UsuarioService implements UserDetailsService, IUsuarioService {
+
+    @Autowired
+    private UsuarioFeignClient client;
+
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        try {
+            Usuario usuario = client.findByUsername(username);
+
+            List<GrantedAuthority> authorities = usuario.getRoles()
+                    .stream()
+                    .map(role -> new SimpleGrantedAuthority(role.getNombre()))
+                    .peek(authority -> log.info("Role: " + authority.getAuthority()))
+                    .collect(Collectors.toList());
+
+            log.info("Usuario autenticado: " + username);
+
+            return new User(usuario.getUsername(), usuario.getPassword(), usuario.getEnabled(), true, true, true, authorities);
+        } catch (FeignException e) {
+            String error = "Error en el login, no existe el usuario '" + username + "' en el sistema";
+            log.error(error);
+            throw new UsernameNotFoundException(error);
+        }
+        
+}
+```
+
+## Spring Cloud Gateway Security JWT
+
+La implementación de OAuth2 que implementamos antaeriormente no es compatible con una aplicación reactiva como Spring Cloud Gateway, por lo que hay que hacer esta implementación de otra forma.
+
+Para esto necesitamos dependencias como **JJwt**, **Spring Security**, **Cloud Bootstrap** y **Spring Cloud Config Client**.
+
+```xml
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-api</artifactId>
+    <version>0.12.5</version>
+</dependency>
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-impl</artifactId>
+    <version>0.12.5</version>
+    <scope>runtime</scope>
+</dependency>
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-jackson</artifactId> <!-- or jjwt-gson if Gson is preferred -->
+    <version>0.12.5</version>
+    <scope>runtime</scope>
+</dependency>
+```
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+</dependency>
+```
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-bootstrap</artifactId>
+</dependency>
+```
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-config</artifactId>
+</dependency>
+```
+
+También hay que actualizar el archivo **application.yaml**, para incluir los servicios de OAuth y de usuarios.
+
+```yaml
+resilience4j:
+  circuitbreaker:
+    configs:
+      defecto:
+        sliding-window-size: 6
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 4
+        slow-call-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+    instances:
+      products:
+        base-config: defecto
+  timelimiter:
+    configs:
+      defecto:
+        timeout-duration: 2s
+    instances:
+      products:
+        base-config: defecto
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: microservice-products
+          uri: lb://microservice-products
+          predicates:
+            - Path=/api/products/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: products
+                statusCodes: 500
+                fallbackUri: forward:/api/items/ver/9/cantidad/1
+            - StripPrefix=2
+            - name: Ejemplo
+              args:
+                mensaje: Hola Mundo
+                cookieName: cookie
+                cookieValue: cookieValue
+        - id: microservice-item
+          uri: lb://microservice-item
+          predicates:
+            - Path=/api/items/**
+          filters:
+            - StripPrefix=2
+        - id: microservice-oauth
+            uri: lb://microservice-oauth
+            predicates:
+                - Path=/api/security/**
+            filters:
+                - StripPrefix=2
+        - id: microservice-users
+            uri: lb://microservice-users
+            predicates:
+                - Path=/api/users/**
+            filters:
+                - StripPrefix=2
+```
+
+Ademas en al **application.properties** debemos agragar una configuración para el servidor de configuración.
+
+```properties
+spring.application.name=gateway-server
+server.port=8090
+
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+
+spring.config.import=optional:configserver:http://localhost:8888
+```
+
+También hay que crear el archivo **bootstrap.properties**.
+
+```properties
+spring.application.name=gateway-server
+spring.cloud.config.uri=http://localhost:8888
+```
+
+### Implementando la clase de configuración SecurityConfig
+
+En el servicio de **Gateway** creamos un nuevo package **security** y dentro la clase **SpringSecurityConfig**.
+
+```java
+@EnableWebFluxSecurity
+public class SpringSecurityConfig {
+
+    @Bean
+    public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
+        return http.authorizeExchange()
+                .anyExchange().authenticated()
+                .and().csrf().disable()
+                .build();
+    }
+}
+```
+
+Con esto estamos indicando que cualquier ruta que no haya sido configurada, es decir, cualquier ruta, va a requerir autenticación.
+
+### Reglas de seguridad para las rutas
+
+Podemos implementar reglas ded seguridad para las rutas, por ejemplo, permitir el acceso a ciertas rutas a usuarios con ciertos roles.
+
+```java
+@EnableWebFluxSecurity
+public class SpringSecurityConfig {
+
+    @Bean
+    public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
+        return http.authorizeExchange()
+                .pathMatchers("/api/security/oauth/**").permitAll()
+                .pathMatchers(HttpMethod.GET, "/api/products/list", "/api/items/list", "/api/users/users").permitAll()
+                .pathMatchers(HttpMethod.GET, "/api/products/view/{id}", "/api/items/view/{id}/quantity/{quantity}", "/api/users/users/{id}").hasAnyRole("ADMIN", "USER")
+                .pathMatchers("/api/products/**", "/api/items/**", "/api/users/**").hasRole("ADMIN")
+                .anyExchange().authenticated()
+                .and().csrf().disable()
+                .build();
+    }
+}
+```
+
+Con **.pathMatchers()** podemos establecer reglas de seguridad para las rutas, como los métodos HTTP que se pueden usar en dichas rutas. 
+
+**.permitAll()** permite el acceso sin autenticación.
+
+**.hasAnyRole("ADMIN", "USER")** permite el acceso a usuarios con los roles "ADMIN" o "USER".
+
+**.hasRole("ADMIN")** permite el acceso solo a usuarios con el rol "ADMIN".
+
+### Introducción a la Programación Reactiva con WebFlux
+
+La programación reactiva está orientada a flujos de datos, somilar a las listas y arreglos pero de manera asíncrona y con programación funcional usando expresiones lambda, nos permite mediante operadores transformar, filtrar, combinar y manipular estos flujos de datos.
+
+#### Características principales
+
+- Inmutable: Cada operación sobre un flujo de datos no modifica el flujo original, sino que crea un nuevo flujo con los cambios.
+- Asíncrono: Cada flujo se ejecuta en su propio proceso, permitiendo que múltiples flujos se ejecuten en paralelo, sin afectarse unos a otros.
+- Cancelable: Se pueden cancelar las operaciones en cualquier momento, evitando la ejecución de operaciones innecesarias.
+- Orientado a eventos: Se basa en la emisión de eventos, permitiendo la reacción a estos eventos de manera eficiente.
+
+#### Tipos de flujo reactivo
+
+- Mono [0..1] (Mono\<T>): Emite 0 o 1 elementos, un solo elemento.
+- Flux [0..N] (Flux\<T>): Emite 0 o N elementos, varios elementos.
+
+### Componente Autentication Manager Reactive
+
+El **AuthenticationManager** es el encargado de autenticar a los usuarios, valida el token, la firma de este, etc. Este componente es necesario ya que despues es usado en el filtro de autorización.
+
+Creamos la clase **AuthenticationManagerJwt** en el package **security**.
+
+```java
+@Component
+public class AuthenticationManagerJwt implements ReactiveAuthenticationManager {
+
+    @Autowired
+    private UsuarioService usuarioService;
+
+    @Value("${config.security.oauth.jwt.key}")
+    private String secretKey;
+
+    @Override
+    public Mono<Authentication> authenticate(Authentication authentication) {
+        return Mono.just(authentication.getCredentials().toString())
+            .map(toekn -> {
+                SecretKey key = Keys.hmacShaKeyFor(Base64.getEncoder().encode(secretKey.getBytes()));
+
+                return Jwts.parserBuilder()
+                    .setSigningKey(key)
+                    .build()
+                    .parseClaimsJws(token)
+                    .getBody();
+            })
+            .map(claims -> {
+                String username = claims.get("user_name", String.class);
+                List<String> roles = claims.get("authorities", List.class);
+                Collection<GrantedAuthority> authorities = roles.stream()
+                    .map(role -> new SimpleGrantedAuthority(role))
+                    .collect(Collectors.toList());
+
+                return new UsernamePasswordAuthenticationToken(username, null, authorities);
+            });
+    }
+}
+```
+
+Codificamos la clave secreta en Base64 para mayor seguridad. Pero debemos actualizar el método **accesTokenConverter** de la clase **AuthorizationServerConfig** del servicio OAuth2 para que sea compatible con esto
+
+```java
+@Bean
+public JwtAccessTokenConverter accessTokenConverter() {
+    JwtAccessTokenConverter tokenConverter = new JwtAccessTokenConverter();
+    tokenConverter.setSigningKey(Base64.getEncoder().encodeToString(env.getProperty("config.security.oauth.jwt.key").getBytes()));
+    return tokenConverter;
+}
+```
+
+### Implementando el componente JwtAuthenticationFilter
+
+El **JwtAuthenticationFilter** es un filtro que se encarga de validar el token JWT, este filtro se ejecuta antes de que el servidor procese la petición, si el token es válido, el servidor procesa la petición, si no, el servidor devuelve un error.
+
+Creamos la clase **JwtAuthenticationFilter** en el package **security**.
+
+```java
+@Component
+public class JwtAuthenticationFilter implements WebFilter {
+
+    @Autowired
+    private ReactiveAuthenticationManager authenticationManager;
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+        return Mono.justOrEmpty(exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION))
+            .filter(authHeader -> authHeader.startsWith("Bearer"))
+            .switchIfEmpty(chain.filter(exchange).then(Mono.empty()))
+            .map(token -> token.replace("Bearer ", ""))
+            .flatMap(token -> authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(null, token)))
+            .flatMap(authentication -> chain.filter(exchange).contextWrite(ReactiveSecurityContextHolder.withAuthentication(authentication)));
+    }
+}
+```
+
+Lo que estamos haciendo es obtener el token del header de la petición, validamos que empiece con "Bearer", si no, continuamos con la petición, si si, quitamos el "Bearer" del token, autenticamos el token y si es válido, continuamos con la petición, si no, devolvemos un error.
+
+### Registrar el Filtro JwtAuthenticationFilter en la configuración de Spring Security
+
+Para registrar el filtro **JwtAuthenticationFilter** en la configuración de Spring Security, debemos agregarlo a la clase **SpringSecurityConfig**.
+
+```java
+@EnableWebFluxSecurity
+public class SpringSecurityConfig {
+    
+    @Autowired
+    private JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    @Bean
+    public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
+        return http.authorizeExchange()
+                .pathMatchers("/api/security/oauth/**").permitAll()
+                .pathMatchers(HttpMethod.GET, "/api/products/list", "/api/items/list", "/api/users/users").permitAll()
+                .pathMatchers(HttpMethod.GET, "/api/products/view/{id}", "/api/items/view/{id}/quantity/{quantity}", "/api/users/users/{id}").hasAnyRole("ADMIN", "USER")
+                .pathMatchers("/api/products/**", "/api/items/**", "/api/users/**").hasRole("ADMIN")
+                .anyExchange().authenticated()
+                .and()
+                .addFilterAt(jwtAuthenticationFilter, SecurityWebFiltersOrder.AUTHENTICATION)
+                .csrf().disable()
+                .build();
+    }
+}
+```
