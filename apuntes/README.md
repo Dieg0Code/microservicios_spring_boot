@@ -4156,3 +4156,801 @@ spring.cloud.config.server.git.password=password
 ```
 
 Con esto estamos indicando que el repositorio de configuración es privado y que necesita un usuario y contraseña para acceder.
+
+## Trazabilidad distribuida con Spring Cloud Sleuth y Zipkin
+
+### Spring Cloud Sleuth
+
+Es una dependencia que nos provee una solución de trazado distribuido para Spring Cloud. Permite identificar la petición completa de un microservicio, como un todo, y en cada llamada individual a otros microservicios.
+
+#### TraceId y SpanId
+
+- **TraceId**: Identificador único de una petición completa. Identificador asociado a la petición que viaja entre los microservicios.
+
+- **SpanId**: Identificador único de una llamada individual a un microservicio. Identificador de la unidad de trabajo de cada llamada a un microservicio.
+
+Entonces, una traza (trace) está formada por un conjunto de spans, donde cada span es una llamada a un microservicio.
+
+```
+INFO [servicio-oauth,8a40fc93ab438507,f72188520726632d,false]
+```
+
+En este ejemplo, el primer valor es el nombre del microservicio, el segundo es el TraceId, el tercero es el SpanId y el cuarto es un booleano que indica si se debe exportar la traza.
+
+#### Atributos Annotation
+
+Mide los tiempos de entrada y salida de cada petición, latencia y salud de los servicios:
+
+- **cs (Client Sent)**: El cliente envía una petición al servidor.
+- **sr (Server Received)**: El servidor recibe y procesa la peticion `tiempo_sr - tiempo_cs = latencia`.
+- **ss (Server Sent)**: La respuesta es enviada al servicio cliente `tiempo_ss - tiempo_sr = tiempo procesamiento petición`.
+- **cr (Client Received)**: El cliente recibe la respuesta del servidor `tiempo_cr - tiempo_cs = tiempo total de la traza`.
+
+### Servior Zipkin
+
+Zipkin es una herramienta de monitoreo que toma esta información de trazabilidad y la muestra en una interfaz gráfica, permitiendo visualizar el flujo de las peticiones entre los microservicios.
+
+#### Caraacterísticas
+
+- Servidor para guardar las trazas y monitorización.
+- Integra las funcionalidades de Spring Cloud Sleuth.
+- Interfaz gráfica para visualizar el árbol de llamada de cada traza.
+- Su objetivo es consultar la salud del sistema y detectar problemas de rendimiento.
+
+#### Brokers de mensajería
+
+Tiene dos formas de envío de trazas al servidor, mediante cabeceras HTTP y con Brokers de mensajería (RabittMQ, Kafka).
+
+### Implementando Spring Cloud Sleuth
+
+A medida que aumenta la cantidad de microservicios, se hace mas complejo reastrear las solicitudes, por lo que es necesario implementar un sistema de trazabilidad.
+
+Para esto debemos agregar la dependencia de **Sleuth** a los microservicios que nos interesa trazar, como el de productos, el de items, oauth, usuarios, gateway, etc.
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-sleuth</artifactId>
+</dependency>
+```
+
+### Obteniendo y desplegando Zipkin
+
+Para obtener Zipkin hay que descargar el archivo **zipkin-server-2.23.2-exec.jar** desde la página de [Zipkin](https://zipkin.io/pages/quickstart).
+
+Para desplegarlo hay que ejecutar el siguiente comando.
+
+```cmd
+java -jar zipkin-server-2.23.2-exec.jar
+```
+
+Por defecto se despliega en **localhost:9411**. También por defecto los datos se almacenan en memoria, pero podemos configurarlo para que se almacenen en una base de datos.
+
+### Conectar Zipkin con los microservicios
+
+Para conectar Zipkin con los microservicios hay que agregar la dependencia de **Zipkin** en los microservicios que queremos trazar.
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-zipkin</artifactId>
+</dependency>
+```
+
+Luego en cada uno de los microservicios hay que configurar el servidor de Zipkin en el archivo **application.properties**.
+
+```properties
+spring.application.name=microservice-products
+server.port=8002
+
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+
+spring.sleuth.sampler.probability=1.0
+spring.zipkin.base-url=http://localhost:9411
+```
+
+### Tags personalizados en la traza
+
+Podemos agregar tags personalizados a las trazas, por ejemplo, en el servicio oauth, en el package **services** en la clase **UsuarioService**.
+
+```java
+@Autowired
+private Tracer tracer;
+
+@Override
+public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+    try {
+        Usuario usuario = client.findByUsername(username);
+
+        List<GrantedAuthority> authorities = usuario.getRoles()
+            .stream()
+            .map(role -> new SimpleGrantedAuthority(role.getNombre()))
+            .peek(authority -> log.info("Role: " + authority.getAuthority()))
+            .collect(Collectors.toList());
+
+        log.info("Usuario autenticado: " + username);
+
+        return new User(usuario.getUsername(), usuario.getPassword(), usuario.getEnabled(), true, true, true, authorities);
+    } catch (FeignException e) {
+        String error = "Error en el login, no existe el usuario '" + username + "' en el sistema";
+        log.error(error);
+
+        tracer.currentSpan().tag("error.mensaje", error);
+
+        throw new UsernameNotFoundException(error);
+    }
+}
+```
+
+Podemos agregar estos tags personalizados en cualquier parte del código que creamos que puede ser útil, como para detectar errores, latencia, etc.
+
+### Broker de mensajería RabbitMQ
+
+Un Broker de mensajes es un intermediario entre el productor y el consumidor de mensajes, permite la comunicación entre los microservicios de forma asíncrona.
+
+Rabitt maneja un canal al cual tanto el productor como el consumidor se suscriben, el productor envía mensajes a este canal y el consumidor los recibe.
+
+Para instalar RabittMQ hay que descargar el instalador desde la página de [RabbitMQ](https://www.rabbitmq.com/download.html).
+
+Rabbit usa el lenguaje de programación Erlang, por lo que hay que instalarlo antes de instalar Rabitt. Podemos instalarlo desde la página de [Erlang](https://www.erlang.org/downloads).
+
+Por defecto RabittMQ se despliega en **localhost:15672**.
+
+Para poder vizualizar la consola web de Rabbit debemos instalar un plugin de Rabbit, para esto hay que ejecutar el siguiente comando.
+
+```cmd
+rabbitmq-plugins enable rabbitmq_management
+```
+
+Para que reconozca el comando **rabbitmq-plugins** debemos agregar la carpeta **sbin** de RabittMQ a las variables de entorno del sistema. La ruta por defecto es **C:\Program Files\RabbitMQ Server\rabbitmq_server-3.8.9\sbin**.
+
+### Conectar RabbitMQ con los microservicios y Zipkin
+
+Para conectar RabittMQ con los microservicios hay que agregar la dependencia de **RabbitMQ** en los microservicios que queremos trazar.
+
+```xml
+<dependency>
+    <groupId>org.springframework.amqp</groupId>
+    <artifactId>spring-boot-starter-amqp</artifactId>
+</dependency>
+```
+
+Con esta dependencia el servicio automaticamente en vez de enviar la traza a travez de HTTP, la envia a travez de RabittMQ.
+
+Tambien debemos configurar Zipkin pero este es un **.jar** por lo que la configuración debe hacerse mediante un archivo **.cmd** usando las variables de entorno.
+
+**zipkin.cmd**
+
+```cmd
+@echo off
+set RABBIT_ADDRESSES=localhost:5672
+java -jar ./zipkin-server-2.12.9-exec.jar
+```
+
+Luego podemos ejecutar este scrip para ejecutar **Zipkin** con la configuración que establecimos.
+
+Por último tambien debemos agregar una configuración en el archivo **application.properties** de los microservicios.
+
+```properties
+spring.zipkin.base-url=http://localhost:9411/
+spring.zipkin.sender.type=rabbit
+```
+
+### MySQL Storage en Zipkin
+
+Para configurar Zipkin para que almacene las trazas en una base de datos MySQL hay que editar el archivo **zipkin.cmd**.
+
+```cmd
+@echo off
+set RABBIT_ADDRESSES=localhost:5672
+set STORAGE_TYPE=mysql
+set MYSQL_USER=zipkin
+set MYSQL_PASS=zipkin
+java -jar ./zipkin-server-2.12.9-exec.jar
+```
+
+Debemos crear el schema para definir la base de datos en MySQL.
+
+```sql
+use zipkin;
+CREATE TABLE IF NOT EXISTS zipkin_spans (
+  `trace_id_high` BIGINT NOT NULL DEFAULT 0 COMMENT 'If non zero, this means the trace uses 128 bit traceIds instead of 64 bit',
+  `trace_id` BIGINT NOT NULL,
+  `id` BIGINT NOT NULL,
+  `name` VARCHAR(255) NOT NULL,
+  `remote_service_name` VARCHAR(255),
+  `parent_id` BIGINT,
+  `debug` BIT(1),
+  `start_ts` BIGINT COMMENT 'Span.timestamp(): epoch micros used for endTs query and to implement TTL',
+  `duration` BIGINT COMMENT 'Span.duration(): micros used for minDuration and maxDuration query',
+  PRIMARY KEY (`trace_id_high`, `trace_id`, `id`)
+) ENGINE=InnoDB ROW_FORMAT=COMPRESSED CHARACTER SET=utf8 COLLATE utf8_general_ci;
+```
+
+```sql
+use zipkin;
+ALTER TABLE zipkin_spans ADD INDEX(`trace_id_high`, `trace_id`) COMMENT 'for getTracesByIds';
+ALTER TABLE zipkin_spans ADD INDEX(`name`) COMMENT 'for getTraces and getSpanNames';
+ALTER TABLE zipkin_spans ADD INDEX(`remote_service_name`) COMMENT 'for getTraces and getRemoteServiceNames';
+ALTER TABLE zipkin_spans ADD INDEX(`start_ts`) COMMENT 'for getTraces ordering and range';
+```
+
+Tabla zipkin_annotations
+
+```sql
+use zipkin;
+CREATE TABLE IF NOT EXISTS zipkin_annotations (
+    `trace_id_high` BIGINT NOT NULL DEFAULT 0 COMMENT 'if non zero, this means the trace uses 128 bit traceIds instead of 64 bit',
+    `trace_id` BIGINT NOT NULL COMMENT 'coincides with zipkin_spans.trace_id',
+    `span_id` BIGINT NOT NULL COMMENT 'coincides with zipkin_spans.id',
+    `a_key` VARCHAR(255) NOT NULL COMMENT 'BinaryAnnotation.key or Annotation.value if type == -1',
+    `a_value` BLOB COMMENT 'BinaryAnnotation.value(), which must be smaller than 64KB',
+    `a_type` INT NOT NULL COMMENT 'BinaryAnnotation.type() or -1 if Annotation',
+    `a_timestamp` BIGINT COMMENT 'Used to implement TTL; Annotation.timestamp or zipkin_spans.timestamp',
+    `endpoint_ipv4` INT COMMENT 'Null when Binary/Annotation.endpoint is unset',
+    `endpoint_ipv6` BINARY(16) COMMENT 'Null when Binary/Annotation.endpoint is unset, or no IPv6 address',
+    `endpoint_port` SMALLINT COMMENT 'Null when Binary/Annotation.endpoint is unset',
+    `endpoint_service_name` VARCHAR(255) COMMENT 'Null when Binary/Annotation.endpoint is unset'
+) ENGINE=InnoDB ROW_FORMAT=COMPRESSED CHARACTER SET=utf8 COLLATE utf8_general_ci;
+
+ALTER TABLE zipkin_annotations ADD UNIQUE KEY(`trace_id_high`, `trace_id`, `span_id`, `a_key`, `a_timestamp`);
+ALTER TABLE zipkin_annotations ADD INDEX(`trace_id_high`, `trace_id`, `span_id`);
+ALTER TABLE zipkin_annotations ADD INDEX(`trace_id_high`, `trace_id`);
+ALTER TABLE zipkin_annotations ADD INDEX(`endpoint_service_name`);
+ALTER TABLE zipkin_annotations ADD INDEX(`a_type`);
+ALTER TABLE zipkin_annotations ADD INDEX(`a_key`);
+ALTER TABLE zipkin_annotations ADD INDEX(`trace_id`, `span_id`, `a_key`);
+```
+
+Tabla zipkin_dependencies
+
+```sql
+use zipkin;
+CREATE TABLE IF NOT EXISTS zipkin_dependencies (
+    `day` DATE NOT NULL,
+    `parent` VARCHAR(255) NOT NULL,
+    `child` VARCHAR(255) NOT NULL,
+    `call_count` BIGINT,
+    `error_count` BIGINT,
+    PRIMARY KEY (`day`, `parent`, `child`)
+) ENGINE=InnoDB ROW_FORMAT=COMPRESSED CHARACTER SET=utf8 COLLATE utf8_general_ci;
+```
+
+## Desplegar microservicios en Docker
+
+Docker es una plataforma de código abierto que permite a los desarrolladores empaquetar, enviar y ejecutar aplicaciones en contenedores. Los contenedores son una forma de empaquetar una aplicación con todas sus dependencias, de forma que se pueda ejecutar en cualquier entorno.
+
+### Dockerfile para el servidor de configuración
+
+Para esto primero debemos generar el **.jar** del servidor de configuración, para esto ejecutamos el siguiente comando.
+
+```cmd
+mvn clean package
+```
+
+Luego creamos un archivo **Dockerfile** en la raíz del proyecto del servidor de configuración.
+
+```Dockerfile
+FROM openjdk:17
+VOLUME /tmp
+EXPOSE 8888
+ADD ./target/config-server-0.0.1-SNAPSHOT.jar config-server.jar
+ENTRYPOINT ["java", "-jar", "/config-server.jar"]
+```
+
+Para construir la imagen de Docker ejecutamos el siguiente comando en la raíz del proyecto.
+
+```cmd
+docker build -t config-server:v1 .
+```
+
+Con esto estamos creando una imagen de Docker con el nombre **config-server:v1**.
+
+Como nuestra aplicación es un sistema de microservicios, debemos crear una red para que nuestros microservicios puedan comunicarse entre sí.
+
+```cmd
+docker network create spring-cloud
+```
+
+Ahora podemos ejecutar la imagen que creamos anteriormente.
+
+```cmd 
+docker run -p 8888:8888 --name config-server --network spring-cloud config-server:v1
+``` 
+
+### Dockerizando Eureka Server
+
+```Dockerfile
+FROM openjdk:17
+VOLUME /tmp
+EXPOSE 8761
+ADD ./target/eureka-server-0.0.1-SNAPSHOT.jar eureka-server.jar
+ENTRYPOINT ["java", "-jar", "/eureka-server.jar"]
+```
+
+```cmd
+docker build -t eureka-server:v1 .
+docker run -p 8761:8761 --name eureka-server --network spring-cloud eureka-server:v1
+```
+
+Si quiero ver el log de algún contenedor que se está ejecutando se puede hacer con el comando:
+
+```cmd
+docker logs -f eureka-server
+```
+
+### Descargar imagen de Docker para MySQL
+
+```cmd
+docker pull mysql:8
+```
+
+Para ejecutarla debemos ejecutar el siguiente comando.
+
+```cmd
+docker run -d --name mysql-server -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=microservice-products -p 3306:3306 --network spring-cloud mysql:8
+```
+
+### Descargar imagen de Docker para PostgreSQL
+
+```cmd
+docker pull postgres:13
+```
+
+Para ejecutarla debemos ejecutar el siguiente comando.
+
+```cmd
+docker run -d --name postgres-server -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=microservice-users -p 5432:5432 --network spring-cloud postgres:13
+```
+### Configurar nombre de servidor de MySQL y PostgreSQL en repositorio de configuración
+
+Debemos configurar el repositorio de configuración para que use las imagenes de Docker de MySQL y PostgreSQL.
+
+```properties
+spring.datasource.url=jdbc:mysql://mysql-server:3306/microservice-products?serverTimezone=Ameria/Santiago&allowPublicKeyRetrieval=true&useSSL=false
+```
+
+```properties
+spring.datasource.url=jdbc:postgresql://postgres-server:5432/microservice-users
+```
+
+### Configuración URL de Eureka y config server en microservicios
+
+En el archivo **application.properties** de productos e items debemos configurar la URL de Eureka de la imagen de Docker.
+
+```properties
+eureka.client.serviceUrl.defaultZone=http://eureka-server:8761/eureka
+```
+
+Hay que repetir esto en cada uno de los microservicios clientes de Eureka, usuarios, items, productos, gateway, oauth, etc.
+
+Tambien hay que hacer algo similar pero con el servidor de configuración y el archivo **bootstrap.properties**.
+
+```properties
+spring.application.name=microservice-products
+spring.profiles.active=dev
+spring.cloud.config.uri=http://config-server:8888
+```
+
+Lo mismo con todos los microservicios que usen el servidor de configuración.
+
+### Dockerizar microservicio de productos
+
+Primero hay que generar el **.jar** del microservicio de productos.
+
+```cmd
+mvn clean package
+```
+
+Luego creamos el archivo **Dockerfile** en la raíz del proyecto.
+
+```Dockerfile
+FROM openjdk:17
+VOLUME /tmp
+EXPOSE 8002
+ADD ./target/microservice-products-0.0.1-SNAPSHOT.jar microservice-products.jar
+ENTRYPOINT ["java", "-jar", "/microservice-products.jar"]
+```
+
+```cmd
+docker build -t microservice-products:v1 .
+docker run -p 8002:8002 --name microservice-products --network spring-cloud microservice-products:v1
+```
+
+### Dockerizar microservicio gateway
+
+Primero hay que generar el **.jar** del microservicio de gateway.
+
+```cmd
+mvn clean package
+```
+
+Luego creamos el archivo **Dockerfile** en la raíz del proyecto.
+
+```Dockerfile
+FROM openjdk:17
+VOLUME /tmp
+EXPOSE 8090
+ADD ./target/gateway-server-0.0.1-SNAPSHOT.jar gateway-server.jar
+ENTRYPOINT ["java", "-jar", "/gateway-server.jar"]
+```
+
+```cmd
+docker build -t gateway-server:v1 .
+docker run -p 8090:8090 --name gateway-server --network spring-cloud gateway-server:v1
+```
+
+### Dockerizar microservicio de usuarios
+
+Primero hay que generar el **.jar** del microservicio de usuarios.
+
+```cmd
+mvn clean package
+```
+
+Luego creamos el archivo **Dockerfile** en la raíz del proyecto.
+
+```Dockerfile
+FROM openjdk:17
+VOLUME /tmp
+EXPOSE 8001
+ADD ./target/microservice-users-0.0.1-SNAPSHOT.jar microservice-users.jar
+ENTRYPOINT ["java", "-jar", "/microservice-users.jar"]
+```
+
+```cmd
+docker build -t microservice-users:v1 .
+docker run -p 8001:8001 --name microservice-users --network spring-cloud microservice-users:v1
+```
+
+### Dockerizar microservicio de OAuth
+
+Primero hay que generar el **.jar** del microservicio de OAuth.
+
+```cmd
+mvn clean package
+```
+
+Luego creamos el archivo **Dockerfile** en la raíz del proyecto.
+
+```Dockerfile
+FROM openjdk:17
+VOLUME /tmp
+EXPOSE 9100
+ADD ./target/oauth-server-0.0.1-SNAPSHOT.jar oauth-server.jar
+ENTRYPOINT ["java", "-jar", "/oauth-server.jar"]
+```
+
+```cmd
+docker build -t oauth-server:v1 .
+docker run -p 9100:9100 --name oauth-server --network spring-cloud oauth-server:v1
+```
+
+### Dockerizar microservicio de items
+
+Primero hay que generar el **.jar** del microservicio de items.
+
+```cmd
+mvn clean package
+```
+
+Luego creamos el archivo **Dockerfile** en la raíz del proyecto.
+
+```Dockerfile
+FROM openjdk:17
+VOLUME /tmp
+EXPOSE 8003
+ADD ./target/microservice-item-0.0.1-SNAPSHOT.jar microservice-item.jar
+ENTRYPOINT ["java", "-jar", "/microservice-item.jar"]
+```
+
+```cmd
+docker build -t microservice-item:v1 .
+docker run -p 8003:8003 --name microservice-item --network spring-cloud microservice-item:v1
+```
+
+### Escalar mas instancias de un microservicio
+
+Para escalar mas instancias de un microservicio solo debemos desplegar nuevos contenedores del mismo microservicios, por ejemplo el de productos.
+
+```cmd
+docker run -p 8002:8002 --name microservice-products2 --network spring-cloud microservice-products:v1
+docker run -p 8002:8002 --name microservice-products3 --network spring-cloud microservice-products:v1
+```
+
+Con esto desplegamos dos nuevas instancias del microservicio de productos, como son clientes de Eureka, Eureka se encargará de balancear la carga entre las instancias.
+
+### Descargar imagen de RabbitMQ
+
+```cmd
+docker pull rabbitmq:3.8-management-alpine
+```
+
+Para ejecutarla debemos ejecutar el siguiente comando.
+
+```cmd
+docker run -d --name rabbitmq-server -p 5672:5672 -p 15672:15672 --network spring-cloud rabbitmq:3.8-management-alpine
+```
+
+### Configurar esquema de Zipkin en MySQL
+
+Debemos configurar el schema de Zipkin en MySQL, es el mismo que configuramos anteriormente.
+
+### Dockerizar Zipkin
+
+Creamos el archivo **Dockerfile** en la raíz del proyecto y le pasamos el **.jar** de Zipkin.
+
+```Dockerfile
+FROM openjdk:17
+EXPOSE 9411
+ADD ./zipkin-server-2.23.2-exec.jar zipkin-server.jar
+ENTRYPOINT ["java", "-jar", "/zipkin-server.jar"]
+```
+
+```cmd
+docker build -t zipkin-server:v1 .
+docker run -p 9411:9411 --name zipkin-server --network spring-cloud -e RABBIT_ADDRESSES=rabbitmq-server:5672 -e STORAGE_TYPE=mysql -e MYSQL_USER=zipkin -e MYSQL_PASS=zipkin zipkin-server:v1
+```
+
+Levantamos una instancia de Zipkin con RabbitMQ y MySQL, pasandole las variables de entorno necesarias.
+
+### Configuración de nombre de host de RabbitMQ en repositorio de configuración
+
+Debemos configurar los microservicios para que usen la instancia de Zipkin con RabbitMQ y MySQL que creamos, para esto, en el archivo **application.properties** de los microservicios debemos configurar la URL de Zipkin.
+
+```properties
+spring.zipkin.base-url=http://zipkin-server:9411/
+spring.rabbitmq.host=rabbitmq-server
+```
+
+Pero hacer esto en cada microservicio es tedioso, ya que tendriamos que volver a construir la imagen de Docker y volver a ejecutarla, por lo que es mejor hacer esta configuración mediante el servidor de configuración.
+
+En nuestro archivo **application.properties** que usamos como configuración común para los microservicios debemos agregar las siguientes configuraciones.
+
+```properties
+config.security.oauth.client.id=frontendapp
+config.security.oauth.client.secret=12345
+config.security.oauth.jwt.key=algun_codigo_secreto
+
+spring.zipkin.base-url=http://zipkin-server:9411/
+spring.rabbitmq.host=rabbitmq-server
+```
+
+Con esto centralizamos esta configuración para todos los microservicios que usen el servidor de configuración.
+
+Ahora hay que reiniciar los microservicios para que tomen la nueva configuración.
+
+```cmd
+docker restart microservice-products microservice-users gateway-server oauth-server microservice-item
+```
+
+### Despliege de contenedores con Docker Compose
+
+En vez de desplegar cada contenedor de forma individual, podemos hacerlo con **Docker Compose**.
+
+Creamos un archivo **docker-compose.yml** en la raíz de nuestro directorio de trabajo en donde estan todos los microservicios.
+
+```yml
+vversion: '3.8'
+services:
+  config-server:
+    image: config-server:v1
+    ports:
+      - "8888:8888"
+    restart: always
+    networks:
+      - springcloud
+  servicio-eureka-server:
+    image: servicio-eureka-server:v1
+    ports:
+      - "8761:8761"
+    restart: always
+    networks:
+      - springcloud
+  microservicios-mysql8:
+    image: mysql:8
+    ports:
+      - "3306:3306"
+    restart: always
+    networks:
+      - springcloud
+    environment: 
+      MYSQL_DATABASE: db_springboot_cloud
+      MYSQL_ROOT_PASSWORD: sasa
+  microservicios-postgres12:
+    image: postgres:12-alpine
+    ports:
+      - "5432:5432"
+    restart: always
+    networks:
+      - springcloud
+    environment: 
+      POSTGRES_DB: db_springboot_cloud
+      POSTGRES_PASSWORD: sasa
+  servicio-productos:
+    image: servicio-productos:v1
+    restart: always
+    networks:
+      - springcloud
+    depends_on: 
+      - config-server
+      - servicio-eureka-server
+      - microservicios-mysql8
+  servicio-items:
+    image: servicio-items:v1
+    ports:
+      - "8002:8002"
+      - "8005:8005"
+      - "8007:8007"
+    restart: always
+    networks:
+      - springcloud
+    depends_on: 
+      - config-server
+      - servicio-eureka-server
+      - servicio-productos
+   servicio-usuarios:
+    image: servicio-usuarios:v1
+    restart: always
+    networks:
+      - springcloud
+    depends_on: 
+      - config-server
+      - servicio-eureka-server
+      - microservicios-postgres12
+   servicio-oauth:
+    image: servicio-oauth:v1
+    ports:
+      - "9100:9100"
+    restart: always
+    networks:
+      - springcloud
+    depends_on: 
+      - config-server
+      - servicio-eureka-server
+      - servicio-usuarios
+  servicio-zuul-server:
+    image: servicio-zuul-server:v1
+    ports:
+      - "8090:8090"
+    restart: always
+    networks:
+      - springcloud
+    depends_on: 
+      - config-server
+      - servicio-eureka-server
+      - servicio-productos
+      - servicio-items
+      - servicio-usuarios
+      - servicio-oauth
+  microservicios-rabbitmq38:
+    image: rabbitmq:3.8-management-alpine
+    ports:
+      - "15672:15672"
+      - "5672:5672"
+    restart: always
+    networks:
+      - springcloud
+  zipkin-server:
+    image: zipkin-server:v1
+    ports:
+      - "9411:9411"
+    restart: always
+    networks:
+      - springcloud
+    depends_on: 
+      - microservicios-rabbitmq38
+      - microservicios-mysql8
+    environment: 
+      RABBIT_ADDRESSES: microservicios-rabbitmq38:5672
+      STORAGE_TYPE: mysql
+      MYSQL_USER: zipkin
+      MYSQL_PASS: zipkin
+      MYSQL_HOST: microservicios-mysql8
+networks:
+  springcloud:
+```
+
+Con esto podemos desplegar todos los contenedores con un solo comando.
+
+```cmd
+docker-compose up
+```
+
+### Listado de todos los comandos
+
+======================== config-server
+
+.\mvnw clean package
+ 
+docker build -t config-server:v1 .
+docker network create spring-microservicios
+docker run -p 8888:8888 --name config-server --network springcloud config-server:v1
+
+
+======================== servicio-eureka-server
+
+.\mvnw clean package
+ 
+docker build -t servicio-eureka-server:v1 .
+docker run -p 8761:8761 --name servicio-eureka-server --network springcloud servicio-eureka-server:v1
+======================== mysql
+
+docker pull mysql:8
+docker run -p 3306:3306 --name microservicios-mysql8 --network springcloud -e MYSQL_ROOT_PASSWORD=sasa -e MYSQL_DATABASE=db_springboot_cloud -d mysql:8
+docker logs -f microservicios-mysql8
+
+
+======================== postgresql
+
+docker pull postgres:12-alpine
+docker run -p 5432:5432 --name microservicios-postgres12 --network springcloud -e POSTGRES_PASSWORD=sasa -e POSTGRES_DB=db_springboot_cloud -d postgres:12-alpine
+docker logs -f microservicios-postgres12
+
+
+======================== springboot-servicio-productos
+
+.\mvnw clean package -DskipTests
+ 
+docker build -t servicio-productos:v1 .
+docker run -P --network springcloud servicio-productos:v1
+
+
+======================== springboot-servicio-zuul-server
+
+.\mvnw clean package -DskipTests
+ 
+docker build -t servicio-zuul-server:v1 .
+docker run -p 8090:8090 --network springcloud servicio-zuul-server:v1
+
+
+======================== springboot-servicio-usuarios
+
+.\mvnw clean package -DskipTests
+ 
+docker build -t servicio-usuarios:v1 .
+docker run -P --network springcloud servicio-usuarios:v1
+
+
+======================== springboot-servicio-oauth
+
+.\mvnw clean package -DskipTests
+ 
+docker build -t servicio-oauth:v1 .
+docker run -p 9100:9100 --network springcloud servicio-oauth:v1
+
+
+======================== springboot-servicio-item
+
+.\mvnw clean package -DskipTests
+ 
+docker build -t servicio-items:v1 .
+docker run -p 8002:8002 -p 8005:8005 -p 8007:8007 --network springcloud servicio-items:v1
+
+
+======================== rabbitmq
+
+docker pull rabbitmq:3.8-management-alpine
+docker run -p 15672:15672 -p 5672:5672 --name microservicios-rabbitmq38 --network springcloud -d rabbitmq:3.8-management-alpine
+ 
+docker logs -f microservicios-rabbitmq38
+
+
+======================== zipkin
+
+docker build -t zipkin-server:v1 .
+docker run -p 9411:9411 --name zipkin-server --network springcloud -e RABBIT_ADDRESSES=microservicios-rabbitmq38:5672 -e STORAGE_TYPE=mysql -e MYSQL_USER=zipkin -e MYSQL_PASS=zipkin -e MYSQL_HOST=microservicios-mysql8 zipkin-server:v1
+docker logs -f zipkin-server
+
+
+======================== Otros comandos
+
+detener y eliminar todos los contenedores:
+
+docker stop $(docker ps -q)
+docker rm $(docker ps -a -q)
+
+
+eliminar todas las imagenes:
+
+docker rmi $(docker images -a -q)
